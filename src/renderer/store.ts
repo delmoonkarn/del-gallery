@@ -1,7 +1,7 @@
 import { create } from "zustand";
 
 export type ReaderMode = "single" | "double" | "scroll";
-export type SortBy = "name" | "mtime" | "image_count";
+export type SortBy = "name" | "mtime" | "image_count" | "random";
 export type SortDir = "asc" | "desc";
 
 type State = {

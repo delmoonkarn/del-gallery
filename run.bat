@@ -45,7 +45,11 @@ echo  Close the app window or press Ctrl+C here to stop.
 echo.
 
 call npm run dev
+set EXITCODE=%errorlevel%
 
-echo.
-echo  npm run dev exited with code %errorlevel%
-pause
+if not "%EXITCODE%"=="0" (
+  echo.
+  echo  npm run dev exited with code %EXITCODE%
+  echo  Something went wrong — see the output above.
+  pause
+)

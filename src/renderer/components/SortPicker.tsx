@@ -7,6 +7,7 @@ const OPTIONS: { value: string; label: string; by: SortBy; dir: SortDir }[] = [
   { value: "mtime:asc", label: "Modified oldest", by: "mtime", dir: "asc" },
   { value: "image_count:desc", label: "Most pages", by: "image_count", dir: "desc" },
   { value: "image_count:asc", label: "Fewest pages", by: "image_count", dir: "asc" },
+  { value: "random:asc", label: "🎲 Random", by: "random", dir: "asc" },
 ];
 
 export default function SortPicker({ scope = "main" }: { scope?: "main" | "folder" }) {

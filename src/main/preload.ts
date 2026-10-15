@@ -12,7 +12,7 @@ export type FolderRow = {
   tags: string[];
 };
 
-export type SortOpt = { by?: "name" | "mtime" | "image_count"; dir?: "asc" | "desc" };
+export type SortOpt = { by?: "name" | "mtime" | "image_count" | "random"; dir?: "asc" | "desc" };
 
 const api = {
   pickRoot: (): Promise<string | null> => ipcRenderer.invoke("dialog:pick-root"),

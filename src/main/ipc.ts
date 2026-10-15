@@ -23,7 +23,7 @@ const SELECT_COLS = `
   (SELECT COUNT(*) FROM folders c WHERE c.parent_id = f.id) AS child_count
 `;
 
-type Sort = { by?: "name" | "mtime" | "image_count"; dir?: "asc" | "desc" };
+type Sort = { by?: "name" | "mtime" | "image_count" | "random"; dir?: "asc" | "desc" };
 
 function orderBy(s: Sort | undefined): string {
   const dir = s?.dir === "desc" ? "DESC" : "ASC";
@@ -32,6 +32,8 @@ function orderBy(s: Sort | undefined): string {
       return `ORDER BY f.mtime ${dir}, f.name COLLATE NOCASE ASC`;
     case "image_count":
       return `ORDER BY f.image_count ${dir}, f.name COLLATE NOCASE ASC`;
+    case "random":
+      return `ORDER BY RANDOM()`;
     case "name":
     default:
       return `ORDER BY f.name COLLATE NOCASE ${dir}`;

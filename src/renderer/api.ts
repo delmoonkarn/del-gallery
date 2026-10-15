@@ -18,7 +18,7 @@ export type FolderRow = {
   tags: string[];
 };
 
-export type SortOpt = { by?: "name" | "mtime" | "image_count"; dir?: "asc" | "desc" };
+export type SortOpt = { by?: "name" | "mtime" | "image_count" | "random"; dir?: "asc" | "desc" };
 
 if (!window.api) {
   const msg =
@@ -36,5 +36,11 @@ export const api = window.api;
 // then percent-encode the whole path into the URL's path component.
 export function toLocalUrl(absPath: string): string {
   const normalized = absPath.replace(/\\/g, "/");
-  return "local://f/" + encodeURI(normalized);
+  // encodeURI leaves reserved characters like # and ? un-escaped, which
+  // truncates the pathname when the URL is parsed (# starts a fragment,
+  // ? starts a query string). Encode each path segment individually with
+  // encodeURIComponent instead, so every character in folder/file names
+  // is safely escaped while "/" still separates segments.
+  const encoded = normalized.split("/").map(encodeURIComponent).join("/");
+  return "local://f/" + encoded;
 }
