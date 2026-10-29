@@ -1,6 +1,6 @@
-# Gallery (local)
+# Gallery 
 
-A small desktop app to browse and read folders of images — everything stays on your disk (no servers, no uploads).
+A small desktop app to browse and read folders of images — everything stays on your disk.
 
 What it does
 - Scans one or more library folders for image-containing subfolders (each becomes a chapter). Manage them in Settings: add, rescan, change location (drive letter changed / folder moved), remove.
