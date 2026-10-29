@@ -15,10 +15,15 @@ export type FolderRow = {
   image_count: number;
   child_count: number;
   cover_path: string | null;
+  rating: number;
+  favorite: number;
+  is_archive: number;
   tags: string[];
 };
 
-export type SortOpt = { by?: "name" | "mtime" | "image_count" | "random"; dir?: "asc" | "desc" };
+export type SortOpt = { by?: "name" | "mtime" | "image_count" | "rating" | "random"; dir?: "asc" | "desc" };
+export type Stats = Awaited<ReturnType<Api["stats"]>>;
+export type BulkResult = Awaited<ReturnType<Api["bulkMeta"]>>;
 
 export type RootInfo = {
   id: number;

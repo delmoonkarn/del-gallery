@@ -4,18 +4,19 @@ import { convertCoverToJpeg } from "../lib/convertToJpeg";
 import SearchableTagDropdown from "./SearchableTagDropdown";
 
 type Props = {
+  /** Folder whose tags are edited. */
+  folderId: number;
   /** Initial tags loaded into the editor (comma-joined into the draft). */
   initial: string[];
-  /** Absolute path to the cover image file whose XMP will be rewritten. */
+  /** The folder's cover image, whose XMP will be rewritten ("<archive>|<entry>" for a .cbz/.zip). */
   coverPath: string;
-  /** Called after a successful save. The argument is the (possibly new) cover path,
-   *  which may differ from `coverPath` if a PNG/WebP was auto-converted to JPEG. */
-  onSaved: (newCoverPath: string) => void;
+  /** Called after a successful save. */
+  onSaved: () => void;
   /** Called when the user clicks Cancel or closes the editor. */
   onCancel: () => void;
 };
 
-export default function TagEditor({ initial, coverPath, onSaved, onCancel }: Props) {
+export default function TagEditor({ folderId, initial, coverPath, onSaved, onCancel }: Props) {
   const [draft, setDraft] = useState(initial.join(", "));
   const [allTags, setAllTags] = useState<{ name: string; n: number }[]>([]);
   const [saving, setSaving] = useState(false);
@@ -59,20 +60,22 @@ export default function TagEditor({ initial, coverPath, onSaved, onCancel }: Pro
     const tags = draft.split(",").map((t) => t.trim()).filter(Boolean);
     setSaving(true);
     try {
+      // Archive chapters can't be written into — their tags live in the cache only.
+      const inArchive = coverPath.includes("|");
       // Pre-convert via the renderer's Canvas so WebP and other Chromium-decodable
       // formats work — main's nativeImage falls flat on WebP.
-      let jpegPath = await convertCoverToJpeg(coverPath);
+      if (!inArchive) await convertCoverToJpeg(coverPath);
       try {
-        const result = await api.writeTags(jpegPath, tags);
-        onSaved(result.finalPath);
+        await api.setMeta(folderId, { tags }, !inArchive);
+        onSaved();
       } catch (err: unknown) {
         const msg = (err as Error).message ?? String(err);
         // File has .jpg/.jpeg extension but its content isn't actually JPEG
         // (renamed PNG/WebP). Force a canvas re-encode and retry once.
         if (/not a JPEG|invalid JPEG/i.test(msg)) {
-          jpegPath = await convertCoverToJpeg(coverPath, true);
-          const result = await api.writeTags(jpegPath, tags);
-          onSaved(result.finalPath);
+          await convertCoverToJpeg(coverPath, true);
+          await api.setMeta(folderId, { tags }, true);
+          onSaved();
         } else {
           throw err;
         }

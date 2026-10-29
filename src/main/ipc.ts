@@ -4,8 +4,10 @@ import fs from "node:fs/promises";
 import { getDb } from "./db";
 import { scanLibrary, listImages } from "./scanner";
 import { addRoot, listRoots, relocateRoot, removeRoot, rootById, rootScope } from "./roots";
-import { writeXmpTags } from "./xmp";
-import { ensureJpeg, writeJpegBuffer } from "./image";
+import { writeJpegBuffer } from "./image";
+import { closeArchive, entryPath, listArchiveImages } from "./archive";
+import { BulkOp, bulkMeta, deleteTag, MetaPatch, renameTag, setFolderMeta } from "./meta";
+import { moveFolders } from "./move";
 
 export type FolderRow = {
   id: number;
@@ -16,15 +18,28 @@ export type FolderRow = {
   image_count: number;
   child_count: number;
   cover_path: string | null;
+  rating: number;
+  favorite: number;
+  is_archive: number;
   tags: string[];
 };
 
 const SELECT_COLS = `
-  f.id, f.path, f.parent_id, f.name, f.depth, f.image_count, f.cover_path,
+  f.id, f.path, f.parent_id, f.name, f.depth, f.image_count, f.cover_path, f.rating, f.favorite, f.is_archive,
   (SELECT COUNT(*) FROM folders c WHERE c.parent_id = f.id) AS child_count
 `;
 
-type Sort = { by?: "name" | "mtime" | "image_count" | "random"; dir?: "asc" | "desc" };
+type Sort = { by?: "name" | "mtime" | "image_count" | "rating" | "random"; dir?: "asc" | "desc" };
+/** Gallery filters shared by search and random. */
+type Filters = { favOnly?: boolean; minRating?: number };
+
+function filterWhere(f: Filters | undefined, where: string[], params: unknown[]) {
+  if (f?.favOnly) where.push("f.favorite = 1");
+  if (f?.minRating && f.minRating > 0) {
+    where.push("f.rating >= ?");
+    params.push(f.minRating);
+  }
+}
 
 function orderBy(s: Sort | undefined): string {
   const dir = s?.dir === "desc" ? "DESC" : "ASC";
@@ -33,6 +48,8 @@ function orderBy(s: Sort | undefined): string {
       return `ORDER BY f.mtime ${dir}, f.name COLLATE NOCASE ASC`;
     case "image_count":
       return `ORDER BY f.image_count ${dir}, f.name COLLATE NOCASE ASC`;
+    case "rating":
+      return `ORDER BY f.rating ${dir}, f.favorite ${dir}, f.name COLLATE NOCASE ASC`;
     case "random":
       return `ORDER BY RANDOM()`;
     case "name":
@@ -184,14 +201,20 @@ export function registerIpc(): void {
 
   ipcMain.handle("library:pages", async (_e, id: number) => {
     const db = getDb();
-    const row = db.prepare("SELECT path FROM folders WHERE id = ?").get(id) as { path: string } | undefined;
+    const row = db.prepare("SELECT path, is_archive FROM folders WHERE id = ?").get(id) as
+      | { path: string; is_archive: number }
+      | undefined;
     if (!row) return [];
+    if (row.is_archive) return (await listArchiveImages(row.path)).map((e) => entryPath(row.path, e));
     return listImages(row.path);
   });
 
   ipcMain.handle(
     "library:search",
-    (_e, args: { query: string; tags: string[]; sort?: Sort; minPages?: number; rootId?: number | null }) => {
+    (
+      _e,
+      args: { query: string; tags: string[]; sort?: Sort; minPages?: number; rootId?: number | null; filters?: Filters }
+    ) => {
       const db = getDb();
       const q = `%${args.query.toLowerCase()}%`;
       const scope = rootScope(args.rootId);
@@ -214,6 +237,7 @@ export function registerIpc(): void {
         where.push("f.image_count >= ?");
         params.push(args.minPages);
       }
+      filterWhere(args.filters, where, params);
       if (where.length > 0) sql += ` WHERE ${where.join(" AND ")}`;
       if (args.tags.length > 0) {
         sql += ` GROUP BY f.id HAVING COUNT(DISTINCT t.id) = ${args.tags.length}`;
@@ -263,7 +287,7 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     "library:random",
-    (_e, args: { tags: string[]; query?: string; minPages?: number; rootId?: number | null }) => {
+    (_e, args: { tags: string[]; query?: string; minPages?: number; rootId?: number | null; filters?: Filters }) => {
       const db = getDb();
       const scope = rootScope(args.rootId);
       const params: unknown[] = [...scope.params];
@@ -286,6 +310,7 @@ export function registerIpc(): void {
         where.push("LOWER(f.name) LIKE ?");
         params.push(`%${args.query.toLowerCase().trim()}%`);
       }
+      filterWhere(args.filters, where, params);
       sql += ` WHERE ${where.join(" AND ")}`;
       if (args.tags.length > 0) {
         sql += ` GROUP BY f.id HAVING COUNT(DISTINCT t.id) = ${args.tags.length}`;
@@ -347,14 +372,20 @@ export function registerIpc(): void {
         throw new Error('Folder name cannot contain \\ / : * ? " < > |');
       }
       const db = getDb();
-      const row = db.prepare("SELECT path, name, parent_id FROM folders WHERE id = ?").get(id) as
-        | { path: string; name: string; parent_id: number | null }
+      const row = db.prepare("SELECT path, name, parent_id, is_archive FROM folders WHERE id = ?").get(id) as
+        | { path: string; name: string; parent_id: number | null; is_archive: number }
         | undefined;
       if (!row) throw new Error("Folder not found");
-      if (row.name === newName) return; // no-op
+
+      // Archives are named without their extension in the UI; keep .cbz/.zip on disk.
+      const ext = row.is_archive ? path.extname(row.path) : "";
+      const fileName = ext && !newName.toLowerCase().endsWith(ext.toLowerCase()) ? newName + ext : newName;
+      const displayName = ext ? path.basename(fileName, path.extname(fileName)) : fileName;
+      if (row.name === displayName) return; // no-op
 
       const oldPath = row.path;
-      const newPath = path.join(path.dirname(oldPath), newName);
+      const newPath = path.join(path.dirname(oldPath), fileName);
+      if (row.is_archive) closeArchive(oldPath);
 
       // Refuse if a different filesystem entry already lives at the target.
       // (case-insensitive on Windows: renaming "Foo" → "foo" on the same path
@@ -385,13 +416,14 @@ export function registerIpc(): void {
       const updateCover = db.prepare(
         `UPDATE folders
          SET cover_path = ? || SUBSTR(cover_path, ? + 1)
-         WHERE cover_path LIKE ? OR cover_path LIKE ?`
+         WHERE cover_path LIKE ? OR cover_path LIKE ? OR cover_path LIKE ?`
       );
       const updateName = db.prepare("UPDATE folders SET name = ? WHERE id = ?");
       db.transaction(() => {
         updatePath.run(newPath, oldLen, oldPath, winPrefix + "%", nixPrefix + "%");
-        updateCover.run(newPath, oldLen, winPrefix + "%", nixPrefix + "%");
-        updateName.run(newName, id);
+        // "<archive>|<entry>" covers point inside a renamed .cbz/.zip.
+        updateCover.run(newPath, oldLen, winPrefix + "%", nixPrefix + "%", oldPath + "|%");
+        updateName.run(displayName, id);
       })();
 
       // If we renamed a library folder itself, repoint its roots entry too.
@@ -400,6 +432,8 @@ export function registerIpc(): void {
   );
 
   ipcMain.handle("shell:open-path", async (_e, p: string) => {
+    // For a .cbz/.zip chapter, show the file in its folder rather than opening it.
+    if ((await fs.stat(p).catch(() => null))?.isFile()) return shell.showItemInFolder(p);
     const err = await shell.openPath(p);
     if (err) throw new Error(err);
   });
@@ -433,37 +467,105 @@ export function registerIpc(): void {
     }
   );
 
-  ipcMain.handle("xmp:write", async (_e, args: { filePath: string; tags: string[] }) => {
-    // Auto-convert PNG/WebP covers to JPEG so XMP can be written.
-    const finalPath = await ensureJpeg(args.filePath);
-    await writeXmpTags(finalPath, args.tags);
+  // Tags / stars / favourite for one folder. Written into the cover's XMP when
+  // possible, DB-only otherwise (see meta.ts). Keyed by folder id: a series
+  // folder shares its cover file with its first chapter, so the path is ambiguous.
+  ipcMain.handle(
+    "meta:set",
+    (_e, args: { id: number; patch: Omit<MetaPatch, "editTags">; strict?: boolean }) =>
+      setFolderMeta(args.id, args.patch, args.strict)
+  );
 
-    const db = getDb();
-    // If we converted, repoint any folder whose cover was the old PNG/WebP.
-    if (finalPath !== args.filePath) {
-      db.prepare("UPDATE folders SET cover_path = ? WHERE cover_path = ?").run(finalPath, args.filePath);
-    }
-    // Refresh DB tags for the folder whose cover is this image.
-    const row = db.prepare("SELECT id FROM folders WHERE cover_path = ?").get(finalPath) as
-      | { id: number }
-      | undefined;
-    if (row) {
-      // Use the same 'xmp' source the scanner uses — the tags ARE in the file's
-      // XMP packet now, so there's no real distinction. Avoids two rows per tag
-      // (one 'user', one 'xmp') after the next rescan.
-      db.prepare("DELETE FROM folder_tags WHERE folder_id = ? AND source IN ('xmp','user')").run(row.id);
-      const ins = db.prepare(
-        "INSERT OR IGNORE INTO folder_tags(folder_id, tag_id, source) VALUES (?, ?, 'xmp')"
-      );
-      const tx = db.transaction(() => {
-        for (const t of args.tags) {
-          db.prepare("INSERT OR IGNORE INTO tags(name) VALUES (?)").run(t);
-          const tid = (db.prepare("SELECT id FROM tags WHERE name = ?").get(t) as { id: number }).id;
-          ins.run(row.id, tid);
-        }
-      });
-      tx();
-    }
-    return { converted: finalPath !== args.filePath, finalPath };
+  // Long edits report progress on "op-progress" so the UI can show a bar.
+  const progressTo = (e: Electron.IpcMainInvokeEvent) => (p: { done: number; total: number; current: string }) =>
+    e.sender.send("op-progress", p);
+
+  ipcMain.handle("meta:bulk", (e, args: { ids: number[]; op: BulkOp }) => bulkMeta(args.ids, args.op, progressTo(e)));
+  ipcMain.handle("tags:rename", (e, args: { from: string; to: string }) => renameTag(args.from, args.to, progressTo(e)));
+  ipcMain.handle("tags:delete", (e, name: string) => deleteTag(name, progressTo(e)));
+
+  ipcMain.handle("library:move", async (e, ids: number[]) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showOpenDialog(win!, {
+      title: `Move ${ids.length} item${ids.length === 1 ? "" : "s"} to…`,
+      properties: ["openDirectory"],
+    });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    return moveFolders(ids, r.filePaths[0], progressTo(e));
   });
+
+  ipcMain.handle("library:stats", (_e, rootId: number | null) => libraryStats(rootId));
+}
+
+export type Stats = {
+  folders: number;
+  chapters: number;
+  archives: number;
+  pages: number;
+  favorites: number;
+  rated: number;
+  ratingCounts: number[]; // index 0..5 (0 = unrated), chapters only
+  tags: number;
+  topTags: { name: string; n: number }[];
+  biggest: { id: number; name: string; pages: number }[];
+  newest: { id: number; name: string; mtime: number }[];
+  topRated: { id: number; name: string; rating: number; favorite: number }[];
+  libraries: { name: string; chapters: number; pages: number }[];
+};
+
+function libraryStats(rootId: number | null): Stats {
+  const db = getDb();
+  const scope = rootScope(rootId);
+  const w = (extra: string) => {
+    const parts = [scope.where, extra].filter(Boolean);
+    return parts.length ? `WHERE ${parts.join(" AND ")}` : "";
+  };
+  const q = <T>(sql: string, ...params: unknown[]) => db.prepare(`${scope.cte} ${sql}`).all(...scope.params, ...params) as T[];
+
+  const totals = q<{ folders: number; chapters: number; archives: number; pages: number; favorites: number; rated: number }>(
+    `SELECT COALESCE(SUM(f.is_archive = 0), 0) AS folders, COALESCE(SUM(f.image_count > 0), 0) AS chapters,
+            COALESCE(SUM(f.is_archive = 1), 0) AS archives, COALESCE(SUM(f.image_count), 0) AS pages,
+            COALESCE(SUM(f.favorite = 1), 0) AS favorites, COALESCE(SUM(f.rating > 0), 0) AS rated
+     FROM folders f ${w("")}`
+  )[0];
+  const ratingCounts = [0, 0, 0, 0, 0, 0];
+  for (const r of q<{ rating: number; n: number }>(
+    `SELECT f.rating, COUNT(*) AS n FROM folders f ${w("f.image_count > 0")} GROUP BY f.rating`
+  )) {
+    ratingCounts[Math.min(5, Math.max(0, r.rating))] += r.n;
+  }
+  const topTags = q<{ name: string; n: number }>(
+    `SELECT t.name, COUNT(DISTINCT ft.folder_id) AS n FROM tags t
+     JOIN folder_tags ft ON ft.tag_id = t.id JOIN folders f ON f.id = ft.folder_id
+     ${w("")} GROUP BY t.id ORDER BY n DESC, t.name LIMIT 30`
+  );
+  const tags = q<{ n: number }>(
+    `SELECT COUNT(DISTINCT ft.tag_id) AS n FROM folder_tags ft JOIN folders f ON f.id = ft.folder_id ${w("")}`
+  )[0].n;
+  const biggest = q<{ id: number; name: string; pages: number }>(
+    `SELECT f.id, f.name, f.image_count AS pages FROM folders f ${w("f.image_count > 0")}
+     ORDER BY f.image_count DESC LIMIT 10`
+  );
+  const newest = q<{ id: number; name: string; mtime: number }>(
+    `SELECT f.id, f.name, f.mtime FROM folders f ${w("f.image_count > 0")} ORDER BY f.mtime DESC LIMIT 10`
+  );
+  const topRated = q<{ id: number; name: string; rating: number; favorite: number }>(
+    `SELECT f.id, f.name, f.rating, f.favorite FROM folders f ${w("(f.rating > 0 OR f.favorite = 1)")}
+     ORDER BY f.rating DESC, f.favorite DESC, f.name COLLATE NOCASE LIMIT 10`
+  );
+
+  const sub = db.prepare(`
+    WITH RECURSIVE sub(id) AS (SELECT ? UNION ALL SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id)
+    SELECT COALESCE(SUM(f.image_count > 0), 0) AS chapters, COALESCE(SUM(f.image_count), 0) AS pages
+    FROM sub JOIN folders f ON f.id = sub.id`);
+  const libraries = (
+    db
+      .prepare(
+        `SELECT r.id, rf.id AS fid, rf.name FROM roots r JOIN folders rf ON rf.path = r.path
+         ${rootId != null ? "WHERE r.id = ?" : ""} ORDER BY rf.name COLLATE NOCASE`
+      )
+      .all(...(rootId != null ? [rootId] : [])) as { id: number; fid: number; name: string }[]
+  ).map((r) => ({ name: r.name, ...(sub.get(r.fid) as { chapters: number; pages: number }) }));
+
+  return { ...totals, ratingCounts, tags, topTags, biggest, newest, topRated, libraries };
 }

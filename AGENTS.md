@@ -47,8 +47,14 @@ src/
 │   │                   userData/sessionData/logs path redirection.
 │   ├── preload.ts      contextBridge → window.api. ESM type but emitted CJS.
 │   ├── ipc.ts          All ipcMain.handle() endpoints. The IPC surface.
-│   ├── db.ts           SQLite open + schema + small helpers (upsertTag, get/setMeta).
-│   ├── scanner.ts      Recursive directory walk, XMP read, cover bubble-up.
+│   ├── db.ts           SQLite open + schema + column/roots migrations + small helpers.
+│   ├── roots.ts        Library folders: list, add, remove, change location.
+│   ├── scanner.ts      Recursive directory walk, XMP read (tags/stars/favourite),
+│   │                   .cbz/.zip chapters, cover bubble-up.
+│   ├── archive.ts      Read-only .cbz/.zip access (yauzl) + "<archive>|<entry>" paths.
+│   ├── meta.ts         Tags / stars / favourite writes (XMP or cache-only), bulk
+│   │                   edits, tag rename/merge/delete.
+│   ├── move.ts         Multi-select "Move to…" (same-drive rename + cache rewrite).
 │   ├── xmp.ts          Hand-rolled JPEG APP1 + XMP packet reader & writer.
 │   └── image.ts        ensureJpeg (nativeImage fallback) + writeJpegBuffer
 │                       (accepts a renderer-encoded JPEG buffer).
@@ -60,12 +66,18 @@ src/
     ├── pages/
     │   ├── Gallery.tsx     "/" — root's children, search/filter/sort/random.
     │   ├── FolderView.tsx  "/folder/:id" — drill-in (subfolders + pages overview + tags).
-    │   └── Reader.tsx      "/read/:id" — reader (single / double / scroll).
+    │   └── Reader.tsx      "/read/:id" — reader (single / double / scroll, RTL,
+                            fit modes, zoom + drag to pan, wide-page spreads).
     ├── components/
     │   ├── Card.tsx              Folder thumbnail. Stashes "last visited" on click.
     │   ├── SortPicker.tsx        Sort dropdown. Has main / folder scope.
     │   ├── TagFilter.tsx         Tag chip row with search input.
     │   ├── TagEditor.tsx         Inline tag editor (input + searchable dropdown).
+    │   ├── RatingControl.tsx     ★★★★★ + ♥ for one folder (FolderView, Reader).
+    │   ├── BulkBar.tsx           Multi-select action bar (tag / rate / ♥ / move).
+    │   ├── SettingsDialog.tsx    Tabs: Library (folders + reset) · Tags · Stats.
+    │   ├── TagManager.tsx        Settings → Tags: rename / merge / delete a tag everywhere.
+    │   ├── StatsPanel.tsx        Settings → Stats: totals, ratings, top tags.
     │   ├── SearchableTagDropdown Picker used by TagEditor.
     │   └── Breadcrumb.tsx        Used in FolderView header.
     └── lib/
@@ -104,11 +116,22 @@ src/
 ### Tag editing flow
 
 `TagEditor` always pre-converts the cover via `convertCoverToJpeg` (canvas →
-JPEG buffer → main writes it) before calling `api.writeTags`. This is because
-Electron's `nativeImage` can't decode WebP, so we use Chromium's decoder via
-`<canvas>` and ship the encoded bytes over IPC. If `writeTags` fails with
-"not a JPEG" (file misnamed `.jpg`), we retry with `convertCoverToJpeg(path, true)`
-which forces a re-encode regardless of extension.
+JPEG buffer → main writes it) before calling `api.setMeta(folderId, { tags }, strict)`.
+This is because Electron's `nativeImage` can't decode WebP, so we use Chromium's
+decoder via `<canvas>` and ship the encoded bytes over IPC. If `setMeta` fails
+with "not a JPEG" (file misnamed `.jpg`), we retry with
+`convertCoverToJpeg(path, true)` which forces a re-encode regardless of extension.
+
+Everything goes through `setFolderMeta()` in `src/main/meta.ts`, **keyed by
+folder id** (a series folder shares its cover file with its first chapter, so
+a path is ambiguous). It writes the cover's XMP — tags (`dc:subject`), stars
+(`xmp:Rating` + `MicrosoftPhoto:Rating`, which Explorer shows) and favourite
+(`xmp:Label="Favorite"`) — only when the folder has its **own** JPEG cover.
+Archives, series folders (bubbled cover) and PNG/WebP covers are cache-only:
+tags get `source = 'user'`, stars/favourite live in `folders.rating/favorite`.
+Bulk edits, the tag manager and the ♥ on cards never convert image files.
+`updateXmp()` rewrites the whole packet, so always patch through it (it keeps
+the fields you don't pass).
 
 ### "local://" protocol
 
@@ -121,12 +144,14 @@ break the URL parser unless you use the fake `f` host.
 SQLite, WAL mode, lives at `<app folder>/cache.db`. Schema in
 `src/main/db.ts`. There are five tables:
 
-- `folders` — one row per directory. Path, parent_id, depth, image_count,
-  cover_path, mtime, last_scanned.
+- `folders` — one row per directory **or .cbz/.zip archive** (`is_archive = 1`;
+  its pages are listed from the zip). Path, parent_id, depth, image_count,
+  cover_path, mtime, last_scanned, rating (0–5), favorite (0/1). Columns added
+  after the first release are created by `addColumns()` in `db.ts`.
 - `tags` — unique tag names (case-insensitive).
 - `folder_tags` — m2m with a `source` column (`'xmp'` for tags read from the
-  cover JPEG, `'user'` for tags the user typed in the editor). The scanner
-  only deletes `'xmp'` rows on rescan; user tags are preserved.
+  cover JPEG, `'user'` for cache-only tags — archives, series folders, PNG/WebP
+  covers). The scanner only deletes `'xmp'` rows on rescan; user tags are preserved.
 - `roots` — the library folders the user added (Settings dialog). Each one
   is scanned into a parent-less row in `folders` (matched by path); the
   gallery's top level is the children of all of them, or of the one picked in
@@ -171,9 +196,20 @@ in the UI relies on that.
   `useScrollRestore` is a fallback for routes where no card was clicked
   (breadcrumb / popstate). Diagnostic switch:
   `window.__scrollDebug = true` in DevTools.
-- **Tags travel with the JPEG.** They live in the file's XMP packet **and**
-  the cache. Deleting `cache.db` doesn't lose tags. Renaming / moving a JPEG
-  outside the app keeps its tags too.
+- **Tags, stars and ♥ travel with the JPEG** for folders with their own JPEG
+  cover — they live in the file's XMP packet **and** the cache, so deleting
+  `cache.db` doesn't lose them. Cache-only ones (archives, series folders,
+  PNG/WebP covers — see "Tag editing flow") *are* lost by Reset DB. The scanner
+  only overwrites stars/♥ from a cover that actually has an XMP packet.
+- **Archive pages are `"<archive path>|<entry name>"`.** `|` can't occur in a
+  Windows path. `toLocalUrl` encodes it; `local://` and `library:pages` split it
+  (`src/main/archive.ts`). Open zips are cached and closed after a minute idle
+  (Windows blocks renaming files we hold open); call `closeArchive()` before
+  renaming or moving one. Only .cbz/.zip — .cbr (RAR) / .cb7 need native libs.
+- **Two-page spreads** are one fixed layout per chapter (`spreads` in
+  `Reader.tsx`): pages wider than tall stand alone, "Cover alone" and the
+  session-only Shift+arrow flip choose the pairing. Navigation steps through
+  that list, so back and forward always show the same pairs.
 - **Read-only files.** Before writing XMP we `fs.chmod(path, 0o666)` to clear
   the Windows read-only attribute. Same for unlink during conversion.
 - **Native modules** (`better-sqlite3`) are rebuilt for Electron's ABI by the

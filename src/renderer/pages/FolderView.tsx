@@ -6,6 +6,8 @@ import SortPicker from "../components/SortPicker";
 import Breadcrumb, { Crumb } from "../components/Breadcrumb";
 import TagEditor from "../components/TagEditor";
 import RenameDialog from "../components/RenameDialog";
+import RatingControl from "../components/RatingControl";
+import BulkBar from "../components/BulkBar";
 import { useScrollRestore } from "../lib/useScrollRestore";
 import { getLastVisited, focusFolderCard, clearLastVisited } from "../lib/lastVisited";
 import { useStore } from "../store";
@@ -60,6 +62,7 @@ export default function FolderView() {
     clearLastVisited(routeKey);
   }, [rows, routeKey]);
 
+  const order = rows.map((r) => r.id);
   const hasImages = (self?.image_count ?? 0) > 0;
   const hasChildren = rows.length > 0;
 
@@ -76,6 +79,14 @@ export default function FolderView() {
         <div className="flex-1 min-w-0" title={self?.path}>
           <Breadcrumb trail={trail} />
         </div>
+        {self && (
+          <RatingControl
+            folderId={self.id}
+            rating={self.rating}
+            favorite={self.favorite === 1}
+            onChange={(v) => setSelf({ ...self, rating: v.rating, favorite: v.favorite ? 1 : 0 })}
+          />
+        )}
         {hasChildren && <SortPicker scope="folder" />}
         {self && (
           <button
@@ -129,14 +140,14 @@ export default function FolderView() {
                 style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}
               >
                 {rows.map((r) => (
-                  <Card key={r.id} row={r} onChanged={refreshChildren} />
+                  <Card key={r.id} row={r} onChanged={refreshChildren} order={order} />
                 ))}
               </div>
             ) : (
               <div className="flex gap-4 overflow-x-auto pb-2 snap-x">
                 {rows.map((r) => (
                   <div key={r.id} className="w-[180px] shrink-0 snap-start">
-                    <Card row={r} onChanged={refreshChildren} />
+                    <Card row={r} onChanged={refreshChildren} order={order} />
                   </div>
                 ))}
               </div>
@@ -160,6 +171,7 @@ export default function FolderView() {
             </div>
             {editTags && self.cover_path ? (
               <TagEditor
+                folderId={self.id}
                 initial={self.tags}
                 coverPath={self.cover_path}
                 onSaved={async () => {
@@ -223,6 +235,8 @@ export default function FolderView() {
           <div className="text-neutral-500 text-sm p-8 text-center">Empty folder.</div>
         )}
       </main>
+
+      <BulkBar visibleIds={order} onDone={refreshChildren} />
 
       {renaming && self && (
         <RenameDialog

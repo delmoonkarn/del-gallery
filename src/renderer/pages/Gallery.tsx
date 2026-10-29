@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, FolderRow, RootInfo } from "../api";
 import { useStore } from "../store";
@@ -6,6 +6,7 @@ import Card from "../components/Card";
 import TagFilter from "../components/TagFilter";
 import SortPicker from "../components/SortPicker";
 import SettingsDialog from "../components/SettingsDialog";
+import BulkBar from "../components/BulkBar";
 import { useScrollRestore } from "../lib/useScrollRestore";
 import { getLastVisited, focusFolderCard, clearLastVisited } from "../lib/lastVisited";
 
@@ -21,6 +22,10 @@ export default function Gallery() {
     sortDir,
     minPages,
     setMinPages,
+    favOnly,
+    setFavOnly,
+    minRating,
+    setMinRating,
   } = useStore();
   const nav = useNavigate();
   const [rows, setRows] = useState<FolderRow[]>([]);
@@ -53,12 +58,13 @@ export default function Gallery() {
 
   const refresh = useCallback(async () => {
     const sort = { by: sortBy, dir: sortDir };
-    if (query || activeTags.length > 0 || minPages > 0) {
-      setRows(await api.search(query, activeTags, sort, minPages, library));
+    // Favourite/star filters search the whole tree, like tags do.
+    if (query || activeTags.length > 0 || minPages > 0 || favOnly || minRating > 0) {
+      setRows(await api.search(query, activeTags, sort, minPages, library, { favOnly, minRating }));
     } else {
       setRows(await api.children(null, sort, minPages, library));
     }
-  }, [query, activeTags, sortBy, sortDir, minPages, library]);
+  }, [query, activeTags, sortBy, sortDir, minPages, library, favOnly, minRating]);
 
   // One-time mount: load library folders and install scan listeners.
   useEffect(() => {
@@ -91,13 +97,15 @@ export default function Gallery() {
   }, [refresh]);
 
   const rollRandom = async () => {
-    const r = await api.random(activeTags, query, minPages, library);
+    const r = await api.random(activeTags, query, minPages, library, { favOnly, minRating });
     if (!r) {
       alert("No folder matches the current filters.");
       return;
     }
     nav(`/folder/${r.id}`);
   };
+
+  const order = useMemo(() => rows.map((r) => r.id), [rows]);
 
   // Rescans the library picked in the header, or all of them.
   const rescan = async () => {
@@ -128,7 +136,7 @@ export default function Gallery() {
             className={`px-3 py-1.5 rounded text-sm ${
               roots?.length === 0 ? "bg-indigo-600 hover:bg-indigo-500" : "bg-neutral-800 hover:bg-neutral-700"
             }`}
-            title="Library folders, reset"
+            title="Library folders, tags, stats, reset"
           >
             ⚙ Settings
           </button>
@@ -165,6 +173,31 @@ export default function Gallery() {
             />
             pages
           </label>
+          <button
+            onClick={() => setFavOnly(!favOnly)}
+            className={`px-2 py-1 rounded text-sm leading-none ${
+              favOnly ? "bg-rose-600/80 text-white" : "bg-neutral-900 border border-neutral-800 text-neutral-400 hover:text-rose-400"
+            }`}
+            title="Only favourites"
+          >
+            ♥
+          </button>
+          <select
+            value={minRating}
+            onChange={(e) => setMinRating(Number(e.target.value))}
+            className={`px-1.5 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500 ${
+              minRating ? "text-amber-400" : "text-neutral-400"
+            }`}
+            title="Minimum star rating"
+          >
+            <option value={0}>any ★</option>
+            {[1, 2, 3, 4, 5].map((n) => (
+              <option key={n} value={n}>
+                {"★".repeat(n)}
+                {n < 5 ? "+" : ""}
+              </option>
+            ))}
+          </select>
           <SortPicker />
           {roots && roots.length > 1 ? (
             <select
@@ -212,11 +245,20 @@ export default function Gallery() {
             style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}
           >
             {rows.map((r) => (
-              <Card key={r.id} row={r} onChanged={refresh} />
+              <Card key={r.id} row={r} onChanged={refresh} order={order} />
             ))}
           </div>
         )}
       </main>
+
+      <BulkBar
+        visibleIds={order}
+        onDone={() => {
+          refreshRef.current();
+          setTagsVersion((v) => v + 1);
+        }}
+      />
+
 
       {settingsOpen && (
         <SettingsDialog

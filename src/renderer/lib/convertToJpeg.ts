@@ -15,6 +15,8 @@ import { api, toLocalUrl } from "../api";
  * a real JPEG to the same path.
  */
 export async function convertCoverToJpeg(srcPath: string, force = false): Promise<string> {
+  // A page inside a .cbz/.zip — never rewritten.
+  if (srcPath.includes("|")) return srcPath;
   if (!force) {
     const lower = srcPath.toLowerCase();
     if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return srcPath;

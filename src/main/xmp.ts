@@ -3,26 +3,42 @@ import path from "node:path";
 
 const XMP_MARKER = Buffer.from("http://ns.adobe.com/xap/1.0/\0", "latin1");
 
-export async function readXmpTags(filePath: string): Promise<string[]> {
+/** What we keep in a cover's XMP: tags (dc:subject), stars (xmp:Rating) and favourite (xmp:Label). */
+export type XmpMeta = { tags: string[]; rating: number; favorite: boolean };
+
+const EMPTY: XmpMeta = { tags: [], rating: 0, favorite: false };
+const FAVORITE_LABEL = "Favorite";
+
+export function isJpegPath(filePath: string): boolean {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext !== ".jpg" && ext !== ".jpeg") return [];
+  return ext === ".jpg" || ext === ".jpeg";
+}
+
+function parsePacket(packet: Buffer): XmpMeta {
+  const xml = packet.toString("utf8");
+  return { tags: parseDcSubject(packet), rating: parseRating(xml), favorite: parseLabel(xml) === FAVORITE_LABEL };
+}
+
+/** `found` is false when the file has no XMP packet at all (or isn't really a JPEG). */
+export async function readXmp(filePath: string): Promise<XmpMeta & { found: boolean }> {
+  if (!isJpegPath(filePath)) return { ...EMPTY, found: false };
   try {
-    const buf = await fs.readFile(filePath);
-    const packet = extractJpegXmpPacket(buf);
-    if (!packet) return [];
-    return parseDcSubject(packet);
+    const packet = extractJpegXmpPacket(await fs.readFile(filePath));
+    return packet ? { ...parsePacket(packet), found: true } : { ...EMPTY, found: false };
   } catch {
-    return [];
+    return { ...EMPTY, found: false };
   }
 }
 
-export async function writeXmpTags(filePath: string, tags: string[]): Promise<void> {
-  const ext = path.extname(filePath).toLowerCase();
-  if (ext !== ".jpg" && ext !== ".jpeg") {
-    throw new Error(`XMP write only supported for JPEG; got ${ext}`);
+/** Rewrite the cover's XMP with `patch` applied; fields not in the patch keep their current value. */
+export async function updateXmp(filePath: string, patch: Partial<XmpMeta>): Promise<XmpMeta> {
+  if (!isJpegPath(filePath)) {
+    throw new Error(`XMP write only supported for JPEG; got ${path.extname(filePath).toLowerCase()}`);
   }
   const buf = await fs.readFile(filePath);
-  const out = replaceXmpPacket(buf, buildXmpPacket(tags));
+  const packet = extractJpegXmpPacket(buf);
+  const next: XmpMeta = { ...(packet ? parsePacket(packet) : EMPTY), ...patch };
+  const out = replaceXmpPacket(buf, buildXmpPacket(next));
   // Clear read-only attribute (Windows) so we can write back in place.
   try {
     await fs.chmod(filePath, 0o666);
@@ -30,7 +46,28 @@ export async function writeXmpTags(filePath: string, tags: string[]): Promise<vo
     /* ignore — chmod may not be supported on every FS */
   }
   await fs.writeFile(filePath, out);
+  return next;
 }
+
+// xmp:Rating as an attribute or element; MicrosoftPhoto:Rating (1–99 %) as a fallback.
+function parseRating(xml: string): number {
+  const m = /xmp:Rating(?:\s*=\s*["'](-?\d+)["']|>\s*(-?\d+)\s*<)/.exec(xml);
+  if (m) return Math.min(5, Math.max(0, parseInt(m[1] ?? m[2], 10) || 0));
+  const p = /MicrosoftPhoto:Rating(?:\s*=\s*["'](\d+)["']|>\s*(\d+)\s*<)/.exec(xml);
+  if (p) {
+    const pct = parseInt(p[1] ?? p[2], 10) || 0;
+    return pct >= 99 ? 5 : pct >= 75 ? 4 : pct >= 50 ? 3 : pct >= 25 ? 2 : pct >= 1 ? 1 : 0;
+  }
+  return 0;
+}
+
+function parseLabel(xml: string): string {
+  const m = /xmp:Label(?:\s*=\s*["']([^"']*)["']|>([^<]*)<)/.exec(xml);
+  return decodeEntities((m?.[1] ?? m?.[2] ?? "").trim());
+}
+
+// Windows Explorer shows stars from MicrosoftPhoto:Rating (percent) as well as xmp:Rating.
+const MS_PERCENT = [0, 1, 25, 50, 75, 99];
 
 function extractJpegXmpPacket(buf: Buffer): Buffer | null {
   if (buf[0] !== 0xff || buf[1] !== 0xd8) return null;
@@ -87,13 +124,20 @@ function encodeEntities(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function buildXmpPacket(tags: string[]): Buffer {
-  const li = tags.map((t) => `      <rdf:li>${encodeEntities(t)}</rdf:li>`).join("\n");
+function buildXmpPacket(meta: XmpMeta): Buffer {
+  const rating = Math.min(5, Math.max(0, Math.round(meta.rating)));
+  const extra =
+    (rating > 0
+      ? `   <xmp:Rating>${rating}</xmp:Rating>\n   <MicrosoftPhoto:Rating>${MS_PERCENT[rating]}</MicrosoftPhoto:Rating>\n`
+      : "") + (meta.favorite ? `   <xmp:Label>${FAVORITE_LABEL}</xmp:Label>\n` : "");
+  const li = meta.tags.map((t) => `      <rdf:li>${encodeEntities(t)}</rdf:li>`).join("\n");
   const xml =
     `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n` +
     `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="gallery">\n` +
     ` <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n` +
-    `  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">\n` +
+    `  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/"` +
+    ` xmlns:xmp="http://ns.adobe.com/xap/1.0/" xmlns:MicrosoftPhoto="http://ns.microsoft.com/photo/1.0/">\n` +
+    extra +
     `   <dc:subject>\n` +
     `    <rdf:Bag>\n${li}\n    </rdf:Bag>\n` +
     `   </dc:subject>\n` +

@@ -1,30 +1,47 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, RootInfo } from "../api";
+import TagManager from "./TagManager";
+import StatsPanel from "./StatsPanel";
 
 type Props = {
   scanning: boolean;
   onClose: () => void;
   /** A scan was queued from here — the gallery should show its progress. */
   onScanStarted: () => void;
-  /** Library folders were added/removed/moved — the gallery should refetch. */
+  /** Library folders or tags changed — the gallery should refetch. */
   onChanged: () => void;
   onReset: () => void;
 };
+
+type Tab = "library" | "tags" | "stats";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "library", label: "Library" },
+  { id: "tags", label: "🏷 Tags" },
+  { id: "stats", label: "📊 Stats" },
+];
 
 const nf = new Intl.NumberFormat();
 
 export default function SettingsDialog({ scanning, onClose, onScanStarted, onChanged, onReset }: Props) {
   const [roots, setRoots] = useState<RootInfo[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>("library");
+  // A tag rename/delete is still writing files — stay open so its progress stays visible.
+  const [tagBusy, setTagBusy] = useState(false);
+  const busyRef = useRef(false);
+  busyRef.current = tagBusy;
+  const close = useCallback(() => {
+    if (!busyRef.current) onClose();
+  }, [onClose]);
 
   const load = useCallback(() => api.roots().then(setRoots), []);
 
   useEffect(() => {
     load();
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && close();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [load, onClose]);
+  }, [load, close]);
 
   // Counts change as a scan progresses; refresh when it finishes.
   useEffect(() => {
@@ -73,20 +90,49 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
-      onMouseDown={onClose}
+      onMouseDown={close}
     >
       <div
         onMouseDown={(e) => e.stopPropagation()}
-        className="bg-neutral-950 border border-neutral-800 rounded-lg shadow-2xl w-[640px] max-w-full max-h-full overflow-y-auto"
+        className="bg-neutral-950 border border-neutral-800 rounded-lg shadow-2xl w-[880px] max-w-full h-[85vh] flex flex-col overflow-hidden"
       >
-        <div className="flex items-center justify-between px-4 py-2.5 border-b border-neutral-900 bg-neutral-900/40">
-          <div className="text-[11px] uppercase tracking-wider text-neutral-400 font-medium">Settings</div>
-          <button onClick={onClose} className="text-neutral-500 hover:text-neutral-100 text-sm leading-none">
+        <div className="flex items-center gap-1 px-3 border-b border-neutral-900 bg-neutral-900/40 shrink-0">
+          <div className="text-[11px] uppercase tracking-wider text-neutral-500 font-medium pr-3">Settings</div>
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              onClick={() => !tagBusy && setTab(t.id)}
+              disabled={tagBusy && t.id !== tab}
+              className={`px-3 py-2.5 text-sm border-b-2 -mb-px transition disabled:opacity-40 ${
+                tab === t.id ? "border-indigo-500 text-neutral-100" : "border-transparent text-neutral-400 hover:text-neutral-200"
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+          <div className="flex-1" />
+          <button
+            onClick={close}
+            disabled={tagBusy}
+            className="text-neutral-500 hover:text-neutral-100 text-sm leading-none disabled:opacity-40"
+            title={tagBusy ? "Wait for the tag change to finish" : "Close (Esc)"}
+          >
             ✕
           </button>
         </div>
 
-        <div className="p-4 space-y-6 text-sm">
+        {tab === "tags" && (
+          <div className="flex-1 min-h-0">
+            <TagManager onChanged={onChanged} onBusy={setTagBusy} />
+          </div>
+        )}
+        {tab === "stats" && (
+          <div className="flex-1 min-h-0 overflow-y-auto">
+            <StatsPanel onClose={onClose} />
+          </div>
+        )}
+        {tab === "library" && (
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-6 text-sm">
           <section>
             <div className="flex items-center justify-between mb-2">
               <h3 className="font-medium text-neutral-200">Library folders</h3>
@@ -158,6 +204,7 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
             </SmallBtn>
           </section>
         </div>
+        )}
       </div>
     </div>
   );

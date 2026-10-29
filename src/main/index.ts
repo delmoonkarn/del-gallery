@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { registerIpc } from "./ipc";
 import { getDb } from "./db";
+import { isEntryPath, readArchiveEntry, splitEntryPath } from "./archive";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
@@ -67,6 +68,13 @@ app.whenReady().then(() => {
     try {
       const u = new URL(req.url);
       const raw = decodeURIComponent(u.pathname).replace(/^\/+/, "");
+      // "<archive>|<entry>" = a page inside a .cbz/.zip (see archive.ts).
+      if (isEntryPath(raw)) {
+        const { archive, entry } = splitEntryPath(raw);
+        const data = await readArchiveEntry(path.normalize(archive), entry);
+        const mime = MIME[path.extname(entry).toLowerCase()] ?? "application/octet-stream";
+        return new Response(new Uint8Array(data), { headers: { "Content-Type": mime } });
+      }
       const filePath = path.normalize(raw);
       const data = await fs.readFile(filePath);
       const ext = path.extname(filePath).toLowerCase();

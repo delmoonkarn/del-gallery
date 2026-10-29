@@ -29,8 +29,25 @@ export function getDb(): Database.Database {
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  addColumns(db);
   migrateRoots(db);
   return db;
+}
+
+/**
+ * Columns added after the first release. SQLite has no ADD COLUMN IF NOT
+ * EXISTS, so check table_info first.
+ *  - rating 0–5 and favorite 0/1: mirrored into the cover's XMP when it can be.
+ *  - is_archive: the row is a .cbz/.zip file read as one chapter, not a directory.
+ */
+function addColumns(d: Database.Database): void {
+  const have = new Set((d.prepare("PRAGMA table_info(folders)").all() as { name: string }[]).map((c) => c.name));
+  const add = (name: string, def: string) => {
+    if (!have.has(name)) d.exec(`ALTER TABLE folders ADD COLUMN ${name} ${def}`);
+  };
+  add("rating", "INTEGER NOT NULL DEFAULT 0");
+  add("favorite", "INTEGER NOT NULL DEFAULT 0");
+  add("is_archive", "INTEGER NOT NULL DEFAULT 0");
 }
 
 /**
