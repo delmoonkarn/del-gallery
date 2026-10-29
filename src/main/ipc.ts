@@ -1,8 +1,9 @@
 import { ipcMain, dialog, BrowserWindow, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
-import { getDb, getMeta, setMeta } from "./db";
+import { getDb } from "./db";
 import { scanLibrary, listImages } from "./scanner";
+import { addRoot, listRoots, relocateRoot, removeRoot, rootById, rootScope } from "./roots";
 import { writeXmpTags } from "./xmp";
 import { ensureJpeg, writeJpegBuffer } from "./image";
 
@@ -40,15 +41,57 @@ function orderBy(s: Sort | undefined): string {
   }
 }
 
-export function registerIpc(): void {
-  ipcMain.handle("dialog:pick-root", async () => {
-    const r = await dialog.showOpenDialog({ properties: ["openDirectory"] });
-    if (r.canceled || r.filePaths.length === 0) return null;
-    setMeta("root_path", r.filePaths[0]);
-    return r.filePaths[0];
-  });
+// Scans run one at a time (two walks on one HDD just thrash it). `scan-done`
+// fires once the queue is empty, so the UI's "Scanning…" state stays honest.
+let scanChain: Promise<unknown> = Promise.resolve();
+let scansQueued = 0;
 
-  ipcMain.handle("library:get-root", () => getMeta("root_path"));
+function queueScan(win: BrowserWindow | null, rootId: number | null) {
+  scansQueued++;
+  const job = scanChain.then(async () => {
+    const ids =
+      rootId == null
+        ? (getDb().prepare("SELECT id FROM roots ORDER BY path COLLATE NOCASE").all() as { id: number }[]).map((r) => r.id)
+        : [rootId];
+    let scanned = 0;
+    const offline: string[] = [];
+    for (const id of ids) {
+      const r = rootById(id);
+      if (!r) continue;
+      try {
+        await fs.access(r.path);
+      } catch {
+        offline.push(r.path);
+        continue;
+      }
+      scanned += await scanLibrary(r.path, win);
+    }
+    return { scanned, offline };
+  });
+  scanChain = job.catch(() => {});
+  return job.finally(() => {
+    scansQueued--;
+    if (scansQueued === 0) win?.webContents.send("scan-done", 0);
+  });
+}
+
+export function registerIpc(): void {
+  ipcMain.handle("roots:list", () => listRoots());
+  ipcMain.handle("roots:add", async (e) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showOpenDialog(win!, { title: "Add a manga folder", properties: ["openDirectory"] });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    const added = addRoot(r.filePaths[0]);
+    void queueScan(win, added.id);
+    return added;
+  });
+  ipcMain.handle("roots:remove", (_e, id: number) => removeRoot(id));
+  ipcMain.handle("roots:relocate", async (e, id: number) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const r = await dialog.showOpenDialog(win!, { title: "Where is this folder now?", properties: ["openDirectory"] });
+    if (r.canceled || r.filePaths.length === 0) return null;
+    return relocateRoot(id, r.filePaths[0]);
+  });
 
   ipcMain.handle("library:reset", () => {
     const db = getDb();
@@ -57,31 +100,32 @@ export function registerIpc(): void {
       db.exec("DELETE FROM folders");
       db.exec("DELETE FROM tags");
       db.exec("DELETE FROM meta");
+      db.exec("DELETE FROM roots");
     })();
     db.exec("VACUUM");
     return true;
   });
 
-  ipcMain.handle("library:scan", async (e, root: string) => {
-    const win = BrowserWindow.fromWebContents(e.sender);
-    return scanLibrary(root, win);
-  });
+  // rootId null = every library folder.
+  ipcMain.handle("library:scan", (e, rootId: number | null) =>
+    queueScan(BrowserWindow.fromWebContents(e.sender), rootId)
+  );
 
   ipcMain.handle(
     "library:children",
-    (_e, parentId: number | null, sort?: Sort, minPages?: number) => {
+    (_e, parentId: number | null, sort?: Sort, minPages?: number, rootId?: number | null) => {
       const db = getDb();
+      const params: unknown[] = [];
+      let where: string;
       if (parentId === null) {
-        const rootId = (db
-          .prepare(
-            `SELECT id FROM folders WHERE path = (SELECT value FROM meta WHERE key = 'root_path')`
-          )
-          .get() as { id: number } | undefined)?.id;
-        if (rootId === undefined) return [];
-        parentId = rootId;
+        // Top level = the children of every library folder (or just the picked one).
+        where = "f.parent_id IN (SELECT rf.id FROM folders rf JOIN roots r ON r.path = rf.path" +
+          (rootId != null ? " WHERE r.id = ?)" : ")");
+        if (rootId != null) params.push(rootId);
+      } else {
+        where = "f.parent_id = ?";
+        params.push(parentId);
       }
-      const params: unknown[] = [parentId];
-      let where = "f.parent_id = ?";
       if (typeof minPages === "number" && minPages > 0) {
         where += " AND f.image_count >= ?";
         params.push(minPages);
@@ -147,11 +191,12 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     "library:search",
-    (_e, args: { query: string; tags: string[]; sort?: Sort; minPages?: number }) => {
+    (_e, args: { query: string; tags: string[]; sort?: Sort; minPages?: number; rootId?: number | null }) => {
       const db = getDb();
       const q = `%${args.query.toLowerCase()}%`;
-      const params: unknown[] = [];
-      let sql = `
+      const scope = rootScope(args.rootId);
+      const params: unknown[] = [...scope.params];
+      let sql = `${scope.cte}
         SELECT DISTINCT ${SELECT_COLS}
         FROM folders f
       `;
@@ -160,7 +205,7 @@ export function registerIpc(): void {
                  JOIN tags t ON t.id = ft.tag_id AND t.name IN (${args.tags.map(() => "?").join(",")})`;
         params.push(...args.tags);
       }
-      const where: string[] = [];
+      const where: string[] = scope.where ? [scope.where] : [];
       if (args.query) {
         where.push("LOWER(f.name) LIKE ?");
         params.push(q);
@@ -218,10 +263,11 @@ export function registerIpc(): void {
 
   ipcMain.handle(
     "library:random",
-    (_e, args: { tags: string[]; query?: string; minPages?: number }) => {
+    (_e, args: { tags: string[]; query?: string; minPages?: number; rootId?: number | null }) => {
       const db = getDb();
-      const params: unknown[] = [];
-      let sql = `
+      const scope = rootScope(args.rootId);
+      const params: unknown[] = [...scope.params];
+      let sql = `${scope.cte}
         SELECT DISTINCT ${SELECT_COLS}
         FROM folders f
       `;
@@ -231,6 +277,7 @@ export function registerIpc(): void {
         params.push(...args.tags);
       }
       const where: string[] = ["f.image_count > 0"];
+      if (scope.where) where.push(scope.where);
       if (typeof args.minPages === "number" && args.minPages > 0) {
         where.push("f.image_count >= ?");
         params.push(args.minPages);
@@ -347,9 +394,8 @@ export function registerIpc(): void {
         updateName.run(newName, id);
       })();
 
-      // If we renamed the scanned root, repoint the meta entry too.
-      const rootPath = getMeta("root_path");
-      if (rootPath === oldPath) setMeta("root_path", newPath);
+      // If we renamed a library folder itself, repoint its roots entry too.
+      db.prepare("UPDATE roots SET path = ? WHERE path = ?").run(newPath, oldPath);
     }
   );
 

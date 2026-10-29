@@ -3,7 +3,7 @@
 A small desktop app to read folders of images as manga/comics — everything stays on your disk (no servers, no uploads).
 
 What it does
-- Scans a root folder for image-containing subfolders (each becomes a chapter).
+- Scans one or more library folders for image-containing subfolders (each becomes a chapter). Manage them in Settings: add, rescan, change location (drive letter changed / folder moved), remove.
 - Shows covers (first natural image; parents inherit child covers).
 - Reads and writes JPEG XMP tags (Windows "Tags" / dc:subject).
 - Search, multi-tag filters, sort options, and a reader with single/two-page/scroll modes.

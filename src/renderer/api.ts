@@ -20,6 +20,16 @@ export type FolderRow = {
 
 export type SortOpt = { by?: "name" | "mtime" | "image_count" | "random"; dir?: "asc" | "desc" };
 
+export type RootInfo = {
+  id: number;
+  path: string;
+  name: string;
+  online: boolean;
+  chapters: number;
+  pages: number;
+  lastScanned: number | null;
+};
+
 if (!window.api) {
   const msg =
     "window.api is undefined — Electron preload did not load. " +

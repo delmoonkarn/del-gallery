@@ -134,6 +134,5 @@ export async function scanLibrary(root: string, win: BrowserWindow | null): Prom
     /* repeat until stable */
   }
 
-  win?.webContents.send("scan-done", scanned);
   return scanned;
 }

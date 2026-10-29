@@ -1,17 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, FolderRow } from "../api";
+import { api, FolderRow, RootInfo } from "../api";
 import { useStore } from "../store";
 import Card from "../components/Card";
 import TagFilter from "../components/TagFilter";
 import SortPicker from "../components/SortPicker";
+import SettingsDialog from "../components/SettingsDialog";
 import { useScrollRestore } from "../lib/useScrollRestore";
 import { getLastVisited, focusFolderCard, clearLastVisited } from "../lib/lastVisited";
 
 export default function Gallery() {
   const {
-    root,
-    setRoot,
+    library,
+    setLibrary,
     query,
     setQuery,
     activeTags,
@@ -26,6 +27,16 @@ export default function Gallery() {
   const [scanning, setScanning] = useState(false);
   const [progress, setProgress] = useState<{ scannedDirs: number; currentPath: string } | null>(null);
   const [tagsVersion, setTagsVersion] = useState(0);
+  const [roots, setRoots] = useState<RootInfo[] | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
+  const loadRoots = useCallback(async () => {
+    const list = await api.roots();
+    setRoots(list);
+    // The picked library was removed — fall back to showing everything.
+    const lib = useStore.getState().library;
+    if (lib != null && !list.some((r) => r.id === lib)) setLibrary(null);
+  }, [setLibrary]);
 
   // Restore scroll once rows are in the DOM so the page has its real height.
   // If the user came back from a folder they opened from here, prefer scrolling
@@ -43,19 +54,23 @@ export default function Gallery() {
   const refresh = useCallback(async () => {
     const sort = { by: sortBy, dir: sortDir };
     if (query || activeTags.length > 0 || minPages > 0) {
-      setRows(await api.search(query, activeTags, sort, minPages));
+      setRows(await api.search(query, activeTags, sort, minPages, library));
     } else {
-      setRows(await api.children(null, sort, minPages));
+      setRows(await api.children(null, sort, minPages, library));
     }
-  }, [query, activeTags, sortBy, sortDir, minPages]);
+  }, [query, activeTags, sortBy, sortDir, minPages, library]);
 
-  // One-time mount: pull the persisted root path and install scan listeners.
+  // One-time mount: load library folders and install scan listeners.
   useEffect(() => {
-    api.getRoot().then(setRoot);
-    const offP = api.onScanProgress(setProgress);
+    loadRoots();
+    const offP = api.onScanProgress((p) => {
+      setScanning(true);
+      setProgress(p);
+    });
     const offD = api.onScanDone(() => {
       setScanning(false);
       setProgress(null);
+      loadRoots();
       // `refresh` is captured by ref to avoid resubscribing on every filter change.
       refreshRef.current();
       // The scan likely produced new tags — force TagFilter to refetch.
@@ -76,7 +91,7 @@ export default function Gallery() {
   }, [refresh]);
 
   const rollRandom = async () => {
-    const r = await api.random(activeTags, query, minPages);
+    const r = await api.random(activeTags, query, minPages, library);
     if (!r) {
       alert("No folder matches the current filters.");
       return;
@@ -84,24 +99,20 @@ export default function Gallery() {
     nav(`/folder/${r.id}`);
   };
 
-  const pickAndScan = async () => {
-    const picked = await api.pickRoot();
-    if (!picked) return;
-    setRoot(picked);
-    setScanning(true);
-    await api.scan(picked);
-  };
-
+  // Rescans the library picked in the header, or all of them.
   const rescan = async () => {
-    if (!root) return;
+    if (!roots?.length) return;
     setScanning(true);
-    await api.scan(root);
+    const r = await api.scan(library);
+    if (r.offline.length) alert("Skipped (not reachable — drive disconnected?):\n" + r.offline.join("\n"));
   };
 
   const resetDb = async () => {
-    if (!confirm("Wipe the entire library cache (folders, tags, root path)? This cannot be undone.")) return;
+    if (!confirm("Wipe the entire library cache (library folders, scanned folders, tags)? This cannot be undone.")) return;
     await api.reset();
-    setRoot(null);
+    setSettingsOpen(false);
+    setLibrary(null);
+    setRoots([]);
     setRows([]);
     clearTags();
     setQuery("");
@@ -113,25 +124,21 @@ export default function Gallery() {
       <header className="sticky top-0 z-10 bg-neutral-950/95 backdrop-blur border-b border-neutral-900 p-4 flex flex-col gap-3">
         <div className="flex gap-2 items-center">
           <button
-            onClick={pickAndScan}
-            className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 rounded text-sm"
+            onClick={() => setSettingsOpen(true)}
+            className={`px-3 py-1.5 rounded text-sm ${
+              roots?.length === 0 ? "bg-indigo-600 hover:bg-indigo-500" : "bg-neutral-800 hover:bg-neutral-700"
+            }`}
+            title="Library folders, reset"
           >
-            Pick Root Folder
+            ⚙ Settings
           </button>
           <button
             onClick={rescan}
-            disabled={!root || scanning}
+            disabled={!roots?.length || scanning}
             className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 disabled:opacity-40 rounded text-sm"
+            title={library == null ? "Rescan every library folder" : "Rescan the selected library folder"}
           >
             {scanning ? "Scanning…" : "Rescan"}
-          </button>
-          <button
-            onClick={resetDb}
-            disabled={scanning}
-            className="px-3 py-1.5 bg-red-900/60 hover:bg-red-800 disabled:opacity-40 rounded text-sm"
-            title="Wipe the entire library cache"
-          >
-            Reset DB
           </button>
           <button
             onClick={rollRandom}
@@ -159,9 +166,26 @@ export default function Gallery() {
             pages
           </label>
           <SortPicker />
-          <div className="text-xs text-neutral-500 truncate flex-1" title={root ?? ""}>
-            {root ?? "no root selected"}
-          </div>
+          {roots && roots.length > 1 ? (
+            <select
+              value={library ?? ""}
+              onChange={(e) => setLibrary(e.target.value ? Number(e.target.value) : null)}
+              className="min-w-0 max-w-xs px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+              title="Which library folder to show"
+            >
+              <option value="">All libraries ({roots.length})</option>
+              {roots.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name}
+                  {r.online ? "" : " (offline)"}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="text-xs text-neutral-500 truncate flex-1" title={roots?.[0]?.path ?? ""}>
+              {roots?.[0]?.path ?? (roots ? "no library folder yet" : "")}
+            </div>
+          )}
         </div>
         <TagFilter refreshKey={tagsVersion} />
         {progress && (
@@ -174,7 +198,13 @@ export default function Gallery() {
       <main className="p-4">
         {rows.length === 0 ? (
           <div className="text-neutral-500 text-sm p-8 text-center">
-            {root ? "No folders yet. Click Rescan." : "Pick a root folder to begin."}
+            {roots?.length ? (
+              "No folders yet. Click Rescan."
+            ) : (
+              <button onClick={() => setSettingsOpen(true)} className="text-indigo-300 hover:underline">
+                Add a library folder in Settings to begin.
+              </button>
+            )}
           </div>
         ) : (
           <div
@@ -187,6 +217,20 @@ export default function Gallery() {
           </div>
         )}
       </main>
+
+      {settingsOpen && (
+        <SettingsDialog
+          scanning={scanning}
+          onClose={() => setSettingsOpen(false)}
+          onScanStarted={() => setScanning(true)}
+          onChanged={() => {
+            loadRoots();
+            refreshRef.current();
+            setTagsVersion((v) => v + 1);
+          }}
+          onReset={resetDb}
+        />
+      )}
     </div>
   );
 }

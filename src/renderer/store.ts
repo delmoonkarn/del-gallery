@@ -5,7 +5,8 @@ export type SortBy = "name" | "mtime" | "image_count" | "random";
 export type SortDir = "asc" | "desc";
 
 type State = {
-  root: string | null;
+  /** Library folder (roots.id) the gallery is limited to; null = all of them. */
+  library: number | null;
   activeTags: string[];
   query: string;
   minPages: number;
@@ -14,7 +15,7 @@ type State = {
   sortDir: SortDir;
   folderSortBy: SortBy;
   folderSortDir: SortDir;
-  setRoot: (p: string | null) => void;
+  setLibrary: (id: number | null) => void;
   toggleTag: (t: string) => void;
   clearTags: () => void;
   setQuery: (q: string) => void;
@@ -25,7 +26,10 @@ type State = {
 };
 
 export const useStore = create<State>((set) => ({
-  root: null,
+  library: (() => {
+    const v = localStorage.getItem("library");
+    return v ? parseInt(v, 10) || null : null;
+  })(),
   activeTags: [],
   query: "",
   minPages: parseInt(localStorage.getItem("minPages") ?? "0", 10) || 0,
@@ -34,7 +38,11 @@ export const useStore = create<State>((set) => ({
   sortDir: (localStorage.getItem("sortDir") as SortDir | null) ?? "desc",
   folderSortBy: (localStorage.getItem("folderSortBy") as SortBy | null) ?? "name",
   folderSortDir: (localStorage.getItem("folderSortDir") as SortDir | null) ?? "asc",
-  setRoot: (p) => set({ root: p }),
+  setLibrary: (id) => {
+    if (id == null) localStorage.removeItem("library");
+    else localStorage.setItem("library", String(id));
+    set({ library: id });
+  },
   toggleTag: (t) =>
     set((s) => ({
       activeTags: s.activeTags.includes(t) ? s.activeTags.filter((x) => x !== t) : [...s.activeTags, t],

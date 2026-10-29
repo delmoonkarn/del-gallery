@@ -29,7 +29,29 @@ export function getDb(): Database.Database {
   db.pragma("synchronous = NORMAL");
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
+  migrateRoots(db);
   return db;
+}
+
+/**
+ * Older versions kept a single `meta.root_path`, and every root ever picked
+ * stayed in `folders` as a parent-less row. Turn all of those into entries in
+ * `roots` (once), so nothing scanned before disappears.
+ */
+function migrateRoots(d: Database.Database): void {
+  const has = d.prepare("SELECT COUNT(*) AS n FROM roots").get() as { n: number };
+  if (has.n > 0) return;
+  const candidates = (d.prepare("SELECT path FROM folders WHERE parent_id IS NULL").all() as { path: string }[]).map(
+    (r) => r.path
+  );
+  const legacy = d.prepare("SELECT value FROM meta WHERE key = 'root_path'").get() as { value: string } | undefined;
+  if (legacy && !candidates.includes(legacy.value)) candidates.push(legacy.value);
+  const now = Math.floor(Date.now() / 1000);
+  const ins = d.prepare("INSERT OR IGNORE INTO roots(path, added_at) VALUES (?, ?)");
+  d.transaction(() => {
+    for (const p of candidates) ins.run(p, now);
+    d.prepare("DELETE FROM meta WHERE key = 'root_path'").run();
+  })();
 }
 
 const SCHEMA = `
@@ -60,6 +82,13 @@ CREATE TABLE IF NOT EXISTS folder_tags (
 CREATE INDEX IF NOT EXISTS idx_folder_tags_tag ON folder_tags(tag_id);
 
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+
+-- Library folders the user added. Each is scanned into a parent-less row in folders.
+CREATE TABLE IF NOT EXISTS roots (
+  id       INTEGER PRIMARY KEY,
+  path     TEXT NOT NULL UNIQUE,
+  added_at INTEGER NOT NULL
+);
 `;
 
 export function upsertTag(name: string): number {

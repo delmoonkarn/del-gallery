@@ -119,7 +119,7 @@ break the URL parser unless you use the fake `f` host.
 ## Database
 
 SQLite, WAL mode, lives at `<app folder>/cache.db`. Schema in
-`src/main/db.ts`. There are exactly four tables:
+`src/main/db.ts`. There are five tables:
 
 - `folders` — one row per directory. Path, parent_id, depth, image_count,
   cover_path, mtime, last_scanned.
@@ -127,8 +127,16 @@ SQLite, WAL mode, lives at `<app folder>/cache.db`. Schema in
 - `folder_tags` — m2m with a `source` column (`'xmp'` for tags read from the
   cover JPEG, `'user'` for tags the user typed in the editor). The scanner
   only deletes `'xmp'` rows on rescan; user tags are preserved.
-- `meta` — root_path lives here. Wipe is via the Reset DB button (clears all
-  four tables + VACUUMs).
+- `roots` — the library folders the user added (Settings dialog). Each one
+  is scanned into a parent-less row in `folders` (matched by path); the
+  gallery's top level is the children of all of them, or of the one picked in
+  the header's library dropdown. Logic lives in `src/main/roots.ts`.
+  Overlapping roots: adding a folder inside a root is refused; adding one
+  that contains roots absorbs them (rows are kept and re-parented by the scan).
+  Older DBs had a single `meta.root_path`; `migrateRoots()` in `db.ts` turns
+  every parent-less folder row into a root once.
+- `meta` — small key/value store (currently unused). Wipe is via Settings →
+  Reset DB (clears all tables + VACUUMs).
 
 `image_count` is **direct images only** (not recursive). The min-pages filter
 in the UI relies on that.
