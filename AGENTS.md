@@ -234,7 +234,7 @@ npx tsc --noEmit                                           # types compile
 npx tsc --noEmit --noUnusedLocals --noUnusedParameters     # stricter; catches dead code
 ```
 
-Then **Ctrl+R** inside the Manga Reader window to force the renderer to
+Then **Ctrl+R** inside the Gallery window to force the renderer to
 reload (HMR is mostly reliable but not always).
 
 For a backend-only change, the dev process auto-restarts the Electron main

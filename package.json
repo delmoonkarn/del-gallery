@@ -1,5 +1,5 @@
 {
-  "name": "manga-reader",
+  "name": "gallery",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -34,8 +34,8 @@
     "vite-plugin-electron-renderer": "^0.14.6"
   },
   "build": {
-    "appId": "com.manga-reader.app",
-    "productName": "Manga Reader",
+    "appId": "com.gallery.app",
+    "productName": "Gallery",
     "asar": true,
     "compression": "maximum",
     "electronLanguages": ["en-US"],

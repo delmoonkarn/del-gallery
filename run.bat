@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableExtensions
-title Manga Reader
+title Gallery
 cd /d "%~dp0"
 
 echo.
 echo  ========================================
-echo   Manga Reader launcher
+echo   Gallery launcher
 echo  ========================================
 echo   Working dir: %CD%
 echo.

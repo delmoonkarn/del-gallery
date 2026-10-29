@@ -79,7 +79,7 @@ export function registerIpc(): void {
   ipcMain.handle("roots:list", () => listRoots());
   ipcMain.handle("roots:add", async (e) => {
     const win = BrowserWindow.fromWebContents(e.sender);
-    const r = await dialog.showOpenDialog(win!, { title: "Add a manga folder", properties: ["openDirectory"] });
+    const r = await dialog.showOpenDialog(win!, { title: "Add a folder", properties: ["openDirectory"] });
     if (r.canceled || r.filePaths.length === 0) return null;
     const added = addRoot(r.filePaths[0]);
     void queueScan(win, added.id);

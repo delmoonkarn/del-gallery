@@ -1,6 +1,6 @@
-# Manga Reader (local)
+# Gallery (local)
 
-A small desktop app to read folders of images as manga/comics — everything stays on your disk (no servers, no uploads).
+A small desktop app to browse and read folders of images — everything stays on your disk (no servers, no uploads).
 
 What it does
 - Scans one or more library folders for image-containing subfolders (each becomes a chapter). Manage them in Settings: add, rescan, change location (drive letter changed / folder moved), remove.

@@ -91,7 +91,7 @@ function buildXmpPacket(tags: string[]): Buffer {
   const li = tags.map((t) => `      <rdf:li>${encodeEntities(t)}</rdf:li>`).join("\n");
   const xml =
     `<?xpacket begin="﻿" id="W5M0MpCehiHzreSzNTczkc9d"?>\n` +
-    `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="manga-reader">\n` +
+    `<x:xmpmeta xmlns:x="adobe:ns:meta/" x:xmptk="gallery">\n` +
     ` <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">\n` +
     `  <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">\n` +
     `   <dc:subject>\n` +
