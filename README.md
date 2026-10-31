@@ -25,6 +25,7 @@ Tech highlights
 - local:// protocol for images (no HTTP server)
 - SQLite via better-sqlite3 (WAL)
 - Canvas-based conversions for non-JPEG images
+- Reader pages are downscaled with pica (high-quality resampling) instead of the browser's default, so screentone and lettering stay crisp
 
 Data locations
 - cache.db — app cache (next to the executable / package.json in dev)

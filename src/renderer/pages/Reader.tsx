@@ -4,6 +4,8 @@ import { api, FolderRow, toLocalUrl } from "../api";
 import { useStore, ReaderMode, FitMode } from "../store";
 import ChapterJumpDialog from "../components/ChapterJumpDialog";
 import RatingControl from "../components/RatingControl";
+import SharpImg from "../components/SharpImg";
+import { resample } from "../lib/resample";
 
 const MODE_ORDER: ReaderMode[] = ["single", "double", "scroll"];
 const MODE_LABEL: Record<ReaderMode, string> = {
@@ -27,6 +29,17 @@ const WIDE_ASPECT = 1.0;
 const DEFAULT_ASPECT = 0.7;
 
 type Size = { w: number; h: number };
+
+// Snap to whole device pixels so the resampled canvas maps 1:1 onto the screen.
+const dpr = () => window.devicePixelRatio || 1;
+const snap = (v: number) => Math.round(v * dpr()) / dpr();
+
+/** Page height in CSS px for a spread with these aspect ratios — shared by layout and prefetch. */
+function spreadHeight(fit: FitMode, vp: { w: number; h: number }, aspects: number[], naturalH: number, zoom: number): number {
+  const sum = aspects.reduce((a, b) => a + b, 0) || DEFAULT_ASPECT;
+  const base = fit === "width" ? vp.w / sum : fit === "original" ? naturalH || vp.h : vp.h;
+  return snap(base * zoom);
+}
 
 export default function Reader() {
   const { id } = useParams();
@@ -387,6 +400,9 @@ export default function Reader() {
           onLeft={() => goLeft()}
           onRight={() => goRight()}
           apiRef={viewApi}
+          prefetch={[spreads[spreadIndex + 1], spreads[spreadIndex - 1]]
+            .filter((sp): sp is number[] => !!sp)
+            .map((sp) => sp.map((i) => ({ i, src: sources[i] })))}
         />
       )}
 
@@ -414,6 +430,8 @@ type PagedProps = {
   onLeft: () => void;
   onRight: () => void;
   apiRef: React.MutableRefObject<{ panBy: (dx: number, dy: number) => void; zoomTo: (z: number) => void } | null>;
+  /** Neighbouring spreads (page index → url) to resample ahead of time. */
+  prefetch: { i: number; src: string }[][];
 };
 
 /**
@@ -421,7 +439,20 @@ type PagedProps = {
  * pannable by dragging when bigger than the window. A click (not a drag) on
  * the left/right half turns the page.
  */
-function PagedView({ sources, indices, sizes, onSize, rtl, fit, zoom, setZoom, onLeft, onRight, apiRef }: PagedProps) {
+function PagedView({
+  sources,
+  indices,
+  sizes,
+  onSize,
+  rtl,
+  fit,
+  zoom,
+  setZoom,
+  onLeft,
+  onRight,
+  apiRef,
+  prefetch,
+}: PagedProps) {
   const ref = useRef<HTMLDivElement>(null);
   const [vp, setVp] = useState({ w: 0, h: 0 });
   // null = "initial position" (top edge, reading-start side), recomputed as sizes arrive.
@@ -443,12 +474,10 @@ function PagedView({ sources, indices, sizes, onSize, rtl, fit, zoom, setZoom, o
   const sumAspect = aspects.reduce((a, b) => a + b, 0) || DEFAULT_ASPECT;
   const naturalH = Math.max(0, ...order.map((i) => sizes[i]?.h ?? 0));
 
-  let baseH: number;
-  if (fit === "width") baseH = vp.w / sumAspect;
-  else if (fit === "original") baseH = naturalH || vp.h;
-  else baseH = vp.h;
-  const H = baseH * zoom;
-  const W = H * sumAspect;
+  const baseH = spreadHeight(fit, vp, aspects, naturalH, 1);
+  const H = spreadHeight(fit, vp, aspects, naturalH, zoom);
+  const widths = aspects.map((a) => snap(H * a));
+  const W = widths.reduce((a, b) => a + b, 0);
 
   const clamp = useCallback(
     (x: number, y: number) => ({
@@ -457,7 +486,8 @@ function PagedView({ sources, indices, sizes, onSize, rtl, fit, zoom, setZoom, o
     }),
     [W, H, vp.w, vp.h]
   );
-  const pos = pan ? clamp(pan.x, pan.y) : clamp(rtl ? vp.w - W : 0, 0);
+  const raw = pan ? clamp(pan.x, pan.y) : clamp(rtl ? vp.w - W : 0, 0);
+  const pos = { x: snap(raw.x), y: snap(raw.y) };
   const overflow = W > vp.w + 1 || H > vp.h + 1;
 
   // Zoom keeping the point under (cx, cy) fixed.
@@ -505,6 +535,22 @@ function PagedView({ sources, indices, sizes, onSize, rtl, fit, zoom, setZoom, o
     return () => el.removeEventListener("wheel", onWheel);
   }, [zoom, zoomAt, overflow, clamp, pos.x, pos.y]);
 
+  // Once this spread is up, get the neighbours resampled at their display size.
+  const prefetchKey = prefetch.map((sp) => sp.map((p) => p.i).join("+")).join("|");
+  useEffect(() => {
+    if (vp.w === 0) return;
+    const t = setTimeout(() => {
+      for (const sp of prefetch) {
+        const as = sp.map((p) => (sizes[p.i] ? sizes[p.i].w / sizes[p.i].h : 0));
+        if (as.some((a) => !a)) continue; // size unknown yet — the preloader will learn it
+        const h = spreadHeight(fit, vp, as, Math.max(...sp.map((p) => sizes[p.i].h)), zoom);
+        sp.forEach((p, k) => void resample(p.src, Math.round(snap(h * as[k]) * dpr()), Math.round(h * dpr())));
+      }
+    }, 250);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefetchKey, sizes, fit, vp.w, vp.h, zoom]);
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
@@ -539,13 +585,13 @@ function PagedView({ sources, indices, sizes, onSize, rtl, fit, zoom, setZoom, o
       {vp.w > 0 && (
         <div className="absolute flex" style={{ left: pos.x, top: pos.y, height: H }}>
           {order.map((i, k) => (
-            <img
+            <SharpImg
               key={i}
               src={sources[indices.indexOf(i)]}
               alt=""
               draggable={false}
               onLoad={(e) => onSize(i, e.currentTarget.naturalWidth, e.currentTarget.naturalHeight)}
-              style={{ height: H, width: H * aspects[k] }}
+              style={{ height: H, width: widths[k] }}
               className="block max-w-none"
             />
           ))}
@@ -601,7 +647,7 @@ function ScrollMode({
     <div ref={ref} className="flex-1 min-h-0 overflow-auto">
       <div className="flex flex-col items-center w-max min-w-full">
         {sources.map((s, i) => (
-          <img key={i} src={s} loading="lazy" style={imgStyle} className="block max-w-none" alt="" />
+          <SharpImg key={i} src={s} lazy loading="lazy" style={imgStyle} className="block max-w-none" alt="" />
         ))}
       </div>
     </div>

@@ -74,6 +74,7 @@ src/
     │   ├── TagFilter.tsx         Tag chip row with search input.
     │   ├── TagEditor.tsx         Inline tag editor (input + searchable dropdown).
     │   ├── RatingControl.tsx     ★★★★★ + ♥ for one folder (FolderView, Reader).
+    │   ├── SharpImg.tsx          <img> that swaps to a pica-resampled canvas (reader pages).
     │   ├── BulkBar.tsx           Multi-select action bar (tag / rate / ♥ / move).
     │   ├── SettingsDialog.tsx    Tabs: Library (folders + reset) · Tags · Stats.
     │   ├── TagManager.tsx        Settings → Tags: rename / merge / delete a tag everywhere.
@@ -82,6 +83,7 @@ src/
     │   └── Breadcrumb.tsx        Used in FolderView header.
     └── lib/
         ├── lastVisited.ts        Stash "which card did the user click" by source route.
+        ├── resample.ts           pica resize to exact device pixels + small LRU caches.
         ├── useScrollRestore.ts   Fallback scroll-position hook.
         └── convertToJpeg.ts      Canvas-based PNG/WebP/etc → JPEG (force-able).
 ```
@@ -206,6 +208,16 @@ in the UI relies on that.
   (`src/main/archive.ts`). Open zips are cached and closed after a minute idle
   (Windows blocks renaming files we hold open); call `closeArchive()` before
   renaming or moving one. Only .cbz/.zip — .cbr (RAR) / .cb7 need native libs.
+- **Reader page quality.** Chromium's own <img> downscaling turns screentone
+  into moiré and softens lettering, so reader pages go through `SharpImg`:
+  the plain <img> lays out and shows first, then `resample()` (pica, default
+  `mks2013` filter, in web workers) draws a copy at exactly the on-screen
+  device-pixel size onto a canvas over it. Page sizes/positions are snapped to
+  whole device pixels (`snap()` in Reader.tsx) so that canvas maps 1:1. The
+  next/previous spread is resampled ahead of time. An extra unsharp-mask
+  "Sharpen" option was tried and dropped: it made real screentone scans
+  look worse. Pixels are read via
+  fetch → blob → createImageBitmap, which keeps the canvas untainted.
 - **Two-page spreads** are one fixed layout per chapter (`spreads` in
   `Reader.tsx`): pages wider than tall stand alone, "Cover alone" and the
   session-only Shift+arrow flip choose the pairing. Navigation steps through
