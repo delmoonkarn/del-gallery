@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, FolderRow, RootInfo } from "../api";
 import { useStore } from "../store";
@@ -59,21 +59,42 @@ export default function Gallery() {
   const refresh = useCallback(async () => {
     const sort = { by: sortBy, dir: sortDir };
     // Favourite/star filters search the whole tree, like tags do.
-    if (query || activeTags.length > 0 || minPages > 0 || favOnly || minRating > 0) {
-      setRows(await api.search(query, activeTags, sort, minPages, library, { favOnly, minRating }));
-    } else {
-      setRows(await api.children(null, sort, minPages, library));
-    }
+    const newRows =
+      query || activeTags.length > 0 || minPages > 0 || favOnly || minRating > 0
+        ? await api.search(query, activeTags, sort, minPages, library, { favOnly, minRating })
+        : await api.children(null, sort, minPages, library);
+    // Non-urgent update: on huge libraries React needs to reconcile thousands
+    // of cards, which can stall long enough for Windows to mark the window
+    // "Not Responding". startTransition lets React yield to the message pump.
+    startTransition(() => setRows(newRows));
   }, [query, activeTags, sortBy, sortDir, minPages, library, favOnly, minRating]);
 
   // One-time mount: load library folders and install scan listeners.
   useEffect(() => {
     loadRoots();
+    // Throttle progress to ~5 updates/s. Without this, large scans fire
+    // hundreds of events and the renderer re-renders constantly.
+    let lastUpdate = 0;
+    let pending: { scannedDirs: number; currentPath: string } | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      if (pending) {
+        // Flip scanning on inside the throttle too — at most 5×/s, not on every event.
+        setScanning(true);
+        setProgress(pending);
+        lastUpdate = Date.now();
+        pending = null;
+      }
+      timer = null;
+    };
     const offP = api.onScanProgress((p) => {
-      setScanning(true);
-      setProgress(p);
+      pending = p;
+      const since = Date.now() - lastUpdate;
+      if (since > 200) flush();
+      else if (!timer) timer = setTimeout(flush, 200 - since);
     });
     const offD = api.onScanDone(() => {
+      if (timer) { clearTimeout(timer); timer = null; }
       setScanning(false);
       setProgress(null);
       loadRoots();
@@ -85,6 +106,7 @@ export default function Gallery() {
     return () => {
       offP();
       offD();
+      if (timer) clearTimeout(timer);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

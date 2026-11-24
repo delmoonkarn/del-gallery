@@ -1,6 +1,7 @@
 import { app, BrowserWindow, protocol } from "electron";
 import path from "node:path";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import { fileURLToPath } from "node:url";
 import { registerIpc } from "./ipc";
 import { getDb } from "./db";
@@ -12,12 +13,44 @@ const isDev = !!process.env.VITE_DEV_SERVER_URL;
 // Keep ALL Electron-managed data (Chromium cache, cookies, localStorage,
 // IndexedDB, GPUCache, logs, etc.) inside the app folder instead of %APPDATA%.
 // Must be set before app.whenReady().
+const appRoot = app.isPackaged ? path.dirname(app.getPath("exe")) : app.getAppPath();
 {
-  const appRoot = app.isPackaged ? path.dirname(app.getPath("exe")) : app.getAppPath();
   app.setPath("userData", path.join(appRoot, "userdata"));
   // Some Chromium subsystems use cache / sessionData / logs paths independently.
   app.setPath("sessionData", path.join(appRoot, "userdata"));
   app.setPath("logs", path.join(appRoot, "userdata", "logs"));
+}
+
+// Mirror main-process stdout/stderr (including caught errors) to a file next
+// to cache.db so crashes leave a diagnosable trail. Writes are SYNCHRONOUS
+// (appendFileSync) — slightly slower but guaranteed on disk even if main hangs
+// or crashes a microsecond later.
+{
+  const logPath = path.join(appRoot, "main.log");
+  try {
+    const stamp = () => new Date().toISOString();
+    const write = (prefix: string, args: unknown[]) => {
+      const line = args
+        .map((a) => (a instanceof Error ? `${a.message}\n${a.stack ?? ""}` : typeof a === "string" ? a : JSON.stringify(a)))
+        .join(" ");
+      try {
+        fsSync.appendFileSync(logPath, `${stamp()} ${prefix} ${line}\n`);
+      } catch {
+        /* disk full? ignore */
+      }
+    };
+    const origErr = console.error.bind(console);
+    const origWarn = console.warn.bind(console);
+    const origLog = console.log.bind(console);
+    console.error = (...a) => { write("ERROR", a); origErr(...a); };
+    console.warn  = (...a) => { write("WARN ", a); origWarn(...a); };
+    console.log   = (...a) => { write("INFO ", a); origLog(...a); };
+    process.on("uncaughtException", (err) => write("UNCAUGHT", [err]));
+    process.on("unhandledRejection", (reason) => write("UNHANDLED", [reason]));
+    write("INFO ", [`--- startup, isDev=${isDev} ---`]);
+  } catch {
+    /* log init failed — carry on, console is still live */
+  }
 }
 
 const MIME: Record<string, string> = {

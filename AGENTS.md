@@ -261,9 +261,13 @@ list — every captured variable must appear there or you'll fire on stale state
 - **Scroll-restore on routes without a card click**. The `lastVisited`
   approach covers the common case but breadcrumb navigation falls back to
   `useScrollRestore`, which has been historically flaky. See notes file.
-- **Incremental scan.** The scanner re-walks the entire tree every time. It
-  could skip directories whose mtime is unchanged. The DB already records
-  `mtime` and `last_scanned`.
+- ~~**Incremental scan.**~~ Done. `scanLibrary` now skips `readdir` on
+  directories whose stored mtime matches the on-disk mtime, still descends
+  into their known children (which may have changed independently), and
+  prunes rows under `root` that weren't visited (directories deleted on
+  disk). Pass `force = true` to re-read everything — useful if XMP was
+  edited outside the app (that doesn't bump a folder's mtime). Archives
+  were already incremental via their own `mtime`.
 - **Tag inheritance for parent folders.** A parent folder bubbles up a
   *cover* from its first child, but **not** the tags. Searching for a tag
   surfaces the leaf, not the parent. Often what you want, but worth
