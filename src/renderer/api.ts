@@ -30,6 +30,7 @@ export type RootInfo = {
   path: string;
   name: string;
   online: boolean;
+  enabled: boolean;
   chapters: number;
   pages: number;
   lastScanned: number | null;

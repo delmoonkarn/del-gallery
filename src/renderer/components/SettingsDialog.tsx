@@ -87,6 +87,8 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
     run(() => api.removeRoot(r.id));
   };
 
+  const toggleEnabled = (r: RootInfo) => run(() => api.setRootEnabled(r.id, !r.enabled));
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-6"
@@ -151,8 +153,20 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
             {roots && roots.length === 0 && <div className="text-neutral-500 text-xs py-2">No folders yet.</div>}
             <div className="space-y-2">
               {roots?.map((r) => (
-                <div key={r.id} className="rounded-md border border-neutral-800 bg-neutral-900/40 px-3 py-2.5">
+                <div
+                  key={r.id}
+                  className={`rounded-md border px-3 py-2.5 transition ${
+                    r.enabled
+                      ? "border-neutral-800 bg-neutral-900/40"
+                      : "border-neutral-900 bg-neutral-900/20 opacity-60"
+                  }`}
+                >
                   <div className="flex items-center gap-2 min-w-0">
+                    <Toggle
+                      on={r.enabled}
+                      onClick={() => toggleEnabled(r)}
+                      title={r.enabled ? "Hide this library from the gallery" : "Show this library in the gallery again"}
+                    />
                     <span
                       className={`w-2 h-2 rounded-full shrink-0 ${r.online ? "bg-emerald-400" : "bg-neutral-600"}`}
                       title={r.online ? "Reachable" : "Not reachable"}
@@ -160,6 +174,11 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
                     <span className="font-mono text-[13px] text-neutral-100 truncate flex-1" title={r.path}>
                       {r.path}
                     </span>
+                    {!r.enabled && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-neutral-800 text-neutral-400 shrink-0">
+                        disabled
+                      </span>
+                    )}
                     {!r.online && (
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-900/50 text-amber-200 shrink-0">
                         offline
@@ -191,6 +210,12 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
                 </div>
               ))}
             </div>
+            {roots && roots.some((r) => !r.enabled) && (
+              <p className="mt-2 text-[11px] text-neutral-500">
+                Disabled libraries stay cached (folders, tags, ratings) but are hidden from the gallery and skipped by
+                Rescan. Flip them back on any time.
+              </p>
+            )}
             {error && <div className="mt-2 text-xs text-red-400 break-words">{error}</div>}
           </section>
 
@@ -207,6 +232,25 @@ export default function SettingsDialog({ scanning, onClose, onScanStarted, onCha
         )}
       </div>
     </div>
+  );
+}
+
+function Toggle({ on, onClick, title }: { on: boolean; onClick: () => void; title?: string }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      aria-pressed={on}
+      className={`relative h-5 w-9 rounded-full transition-colors shrink-0 ${
+        on ? "bg-indigo-600" : "bg-neutral-700"
+      }`}
+    >
+      <span
+        className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-neutral-100 shadow transition-transform ${
+          on ? "translate-x-4" : "translate-x-0"
+        }`}
+      />
+    </button>
   );
 }
 

@@ -38,9 +38,10 @@ export default function Gallery() {
   const loadRoots = useCallback(async () => {
     const list = await api.roots();
     setRoots(list);
-    // The picked library was removed — fall back to showing everything.
+    // The picked library was removed OR has just been disabled — fall back to
+    // "all libraries" so the gallery isn't frozen on something invisible.
     const lib = useStore.getState().library;
-    if (lib != null && !list.some((r) => r.id === lib)) setLibrary(null);
+    if (lib != null && !list.some((r) => r.id === lib && r.enabled)) setLibrary(null);
   }, [setLibrary]);
 
   // Restore scroll once rows are in the DOM so the page has its real height.
@@ -221,26 +222,31 @@ export default function Gallery() {
             ))}
           </select>
           <SortPicker />
-          {roots && roots.length > 1 ? (
-            <select
-              value={library ?? ""}
-              onChange={(e) => setLibrary(e.target.value ? Number(e.target.value) : null)}
-              className="min-w-0 max-w-xs px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-              title="Which library folder to show"
-            >
-              <option value="">All libraries ({roots.length})</option>
-              {roots.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                  {r.online ? "" : " (offline)"}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <div className="text-xs text-neutral-500 truncate flex-1" title={roots?.[0]?.path ?? ""}>
-              {roots?.[0]?.path ?? (roots ? "no library folder yet" : "")}
-            </div>
-          )}
+          {(() => {
+            // The picker only lists enabled libraries. Disabled ones stay in
+            // Settings where the user can flip them back on.
+            const enabledRoots = roots?.filter((r) => r.enabled) ?? [];
+            return enabledRoots.length > 1 ? (
+              <select
+                value={library ?? ""}
+                onChange={(e) => setLibrary(e.target.value ? Number(e.target.value) : null)}
+                className="min-w-0 max-w-xs px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                title="Which library folder to show"
+              >
+                <option value="">All libraries ({enabledRoots.length})</option>
+                {enabledRoots.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.online ? "" : " (offline)"}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div className="text-xs text-neutral-500 truncate flex-1" title={enabledRoots[0]?.path ?? ""}>
+                {enabledRoots[0]?.path ?? (roots ? "no library folder enabled" : "")}
+              </div>
+            );
+          })()}
         </div>
         <TagFilter refreshKey={tagsVersion} />
         {progress && (

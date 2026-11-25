@@ -35,6 +35,7 @@ export default function StatsPanel({ onClose }: { onClose: () => void }) {
 
   const maxTag = Math.max(1, ...(data?.topTags.map((t) => t.n) ?? [1]));
   const maxRating = Math.max(1, ...(data?.ratingCounts ?? [1]));
+  const enabledRoots = roots.filter((r) => r.enabled);
 
   return (
     <div className="text-neutral-100">
@@ -44,14 +45,14 @@ export default function StatsPanel({ onClose }: { onClose: () => void }) {
           gallery's library picker.
         </div>
         <div className="flex-1" />
-        {roots.length > 1 && (
+        {enabledRoots.length > 1 && (
           <select
             value={library ?? ""}
             onChange={(e) => setLibrary(e.target.value ? Number(e.target.value) : null)}
             className="px-2 py-1 bg-neutral-900 border border-neutral-800 rounded text-xs text-neutral-200 focus:outline-none focus:ring-1 focus:ring-indigo-500"
           >
-            <option value="">All libraries ({roots.length})</option>
-            {roots.map((r) => (
+            <option value="">All libraries ({enabledRoots.length})</option>
+            {enabledRoots.map((r) => (
               <option key={r.id} value={r.id}>
                 {r.name}
               </option>

@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { getDb } from "./db";
 import { scanLibrary, listImages } from "./scanner";
-import { addRoot, listRoots, relocateRoot, removeRoot, rootById, rootScope } from "./roots";
+import { addRoot, listRoots, relocateRoot, removeRoot, rootById, rootScope, setRootEnabled } from "./roots";
 import { writeJpegBuffer } from "./image";
 import { closeArchive, entryPath, listArchiveImages } from "./archive";
 import { BulkOp, bulkMeta, deleteTag, MetaPatch, renameTag, setFolderMeta } from "./meta";
@@ -66,9 +66,15 @@ let scansQueued = 0;
 function queueScan(win: BrowserWindow | null, rootId: number | null) {
   scansQueued++;
   const job = scanChain.then(async () => {
+    // "Scan all" skips disabled roots; an explicit rootId still scans that one
+    // (the user clicked Rescan on it in Settings, so honour the choice).
     const ids =
       rootId == null
-        ? (getDb().prepare("SELECT id FROM roots ORDER BY path COLLATE NOCASE").all() as { id: number }[]).map((r) => r.id)
+        ? (
+            getDb()
+              .prepare("SELECT id FROM roots WHERE enabled = 1 ORDER BY path COLLATE NOCASE")
+              .all() as { id: number }[]
+          ).map((r) => r.id)
         : [rootId];
     let scanned = 0;
     const offline: string[] = [];
@@ -103,6 +109,9 @@ export function registerIpc(): void {
     return added;
   });
   ipcMain.handle("roots:remove", (_e, id: number) => removeRoot(id));
+  ipcMain.handle("roots:set-enabled", (_e, args: { id: number; enabled: boolean }) =>
+    setRootEnabled(args.id, args.enabled)
+  );
   ipcMain.handle("roots:relocate", async (e, id: number) => {
     const win = BrowserWindow.fromWebContents(e.sender);
     const r = await dialog.showOpenDialog(win!, { title: "Where is this folder now?", properties: ["openDirectory"] });
@@ -135,9 +144,11 @@ export function registerIpc(): void {
       const params: unknown[] = [];
       let where: string;
       if (parentId === null) {
-        // Top level = the children of every library folder (or just the picked one).
+        // Top level = the children of every enabled library folder (or just
+        // the picked one — an explicit pick overrides the enabled flag, so a
+        // disabled root can still be inspected from the picker).
         where = "f.parent_id IN (SELECT rf.id FROM folders rf JOIN roots r ON r.path = rf.path" +
-          (rootId != null ? " WHERE r.id = ?)" : ")");
+          (rootId != null ? " WHERE r.id = ?)" : " WHERE r.enabled = 1)");
         if (rootId != null) params.push(rootId);
       } else {
         where = "f.parent_id = ?";
@@ -291,7 +302,25 @@ export function registerIpc(): void {
       const db = getDb();
       const scope = rootScope(args.rootId);
       const params: unknown[] = [...scope.params];
-      let sql = `${scope.cte}
+
+      // Random widens the search scope on purpose: a folder is eligible when
+      // its own name matches OR any ancestor's name matches. That way rolling
+      // Random while searching for a series name picks one of its chapters,
+      // even though the series folder itself has no direct images (and would
+      // be excluded by `f.image_count > 0`).
+      const queryText = args.query?.trim() ?? "";
+      let cte = scope.cte;
+      if (queryText) {
+        const qmatchCte = `qmatch(id) AS (
+          SELECT id FROM folders WHERE LOWER(name) LIKE ?
+          UNION ALL
+          SELECT f.id FROM folders f JOIN qmatch m ON f.parent_id = m.id
+        )`;
+        cte = cte ? `${cte}, ${qmatchCte}` : `WITH RECURSIVE ${qmatchCte}`;
+        params.push(`%${queryText.toLowerCase()}%`);
+      }
+
+      let sql = `${cte}
         SELECT DISTINCT ${SELECT_COLS}
         FROM folders f
       `;
@@ -302,13 +331,10 @@ export function registerIpc(): void {
       }
       const where: string[] = ["f.image_count > 0"];
       if (scope.where) where.push(scope.where);
+      if (queryText) where.push("f.id IN (SELECT id FROM qmatch)");
       if (typeof args.minPages === "number" && args.minPages > 0) {
         where.push("f.image_count >= ?");
         params.push(args.minPages);
-      }
-      if (args.query && args.query.trim()) {
-        where.push("LOWER(f.name) LIKE ?");
-        params.push(`%${args.query.toLowerCase().trim()}%`);
       }
       filterWhere(args.filters, where, params);
       sql += ` WHERE ${where.join(" AND ")}`;
@@ -562,7 +588,7 @@ function libraryStats(rootId: number | null): Stats {
     db
       .prepare(
         `SELECT r.id, rf.id AS fid, rf.name FROM roots r JOIN folders rf ON rf.path = r.path
-         ${rootId != null ? "WHERE r.id = ?" : ""} ORDER BY rf.name COLLATE NOCASE`
+         WHERE ${rootId != null ? "r.id = ?" : "r.enabled = 1"} ORDER BY rf.name COLLATE NOCASE`
       )
       .all(...(rootId != null ? [rootId] : [])) as { id: number; fid: number; name: string }[]
   ).map((r) => ({ name: r.name, ...(sub.get(r.fid) as { chapters: number; pages: number }) }));

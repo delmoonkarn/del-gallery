@@ -30,6 +30,7 @@ export function getDb(): Database.Database {
   db.pragma("foreign_keys = ON");
   db.exec(SCHEMA);
   addColumns(db);
+  addRootColumns(db);
   migrateRoots(db);
   return db;
 }
@@ -48,6 +49,17 @@ function addColumns(d: Database.Database): void {
   add("rating", "INTEGER NOT NULL DEFAULT 0");
   add("favorite", "INTEGER NOT NULL DEFAULT 0");
   add("is_archive", "INTEGER NOT NULL DEFAULT 0");
+}
+
+/**
+ * Columns on `roots` added after the first release.
+ *  - enabled 0/1: a disabled root is kept (cache, tags, ids) but hidden from
+ *    the gallery and skipped by "scan all". The user re-enables it to bring
+ *    it back without rescanning.
+ */
+function addRootColumns(d: Database.Database): void {
+  const have = new Set((d.prepare("PRAGMA table_info(roots)").all() as { name: string }[]).map((c) => c.name));
+  if (!have.has("enabled")) d.exec("ALTER TABLE roots ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1");
 }
 
 /**

@@ -7,6 +7,7 @@ export type RootInfo = {
   path: string;
   name: string;
   online: boolean;
+  enabled: boolean;
   chapters: number;
   pages: number;
   lastScanned: number | null;
@@ -30,6 +31,19 @@ const SUBTREE = `
   )
 `;
 
+/**
+ * Union of every enabled root's subtree. Used when a query scopes to "all
+ * libraries" (rootId null) — a disabled root stays cached but its folders are
+ * invisible to the gallery, search, random and stats.
+ */
+const ENABLED_SUBTREE = `
+  WITH RECURSIVE sub(id) AS (
+    SELECT rf.id FROM folders rf JOIN roots r ON r.path = rf.path WHERE r.enabled = 1
+    UNION ALL
+    SELECT f.id FROM folders f JOIN sub ON f.parent_id = sub.id
+  )
+`;
+
 export function rootById(id: number): { id: number; path: string } | null {
   return (getDb().prepare("SELECT id, path FROM roots WHERE id = ?").get(id) as { id: number; path: string }) ?? null;
 }
@@ -42,15 +56,22 @@ export function rootFolderId(rootId: number): number | null {
   return r?.id ?? null;
 }
 
-/** SQL fragment + params limiting `f.id` to one root's subtree (or nothing when rootId is null). */
+/**
+ * SQL fragment + params limiting `f.id` to one root's subtree, or — when
+ * rootId is null — to the union of every enabled root's subtree. The latter
+ * is how a disabled root gets hidden from the all-libraries view without
+ * dropping any of its data.
+ */
 export function rootScope(rootId: number | null | undefined): { cte: string; where: string; params: unknown[] } {
-  if (rootId == null) return { cte: "", where: "", params: [] };
+  if (rootId == null) return { cte: ENABLED_SUBTREE, where: "f.id IN (SELECT id FROM sub)", params: [] };
   return { cte: SUBTREE, where: "f.id IN (SELECT id FROM sub)", params: [rootFolderId(rootId) ?? -1] };
 }
 
 export async function listRoots(): Promise<RootInfo[]> {
   const db = getDb();
-  const rows = db.prepare("SELECT id, path FROM roots ORDER BY path COLLATE NOCASE").all() as { id: number; path: string }[];
+  const rows = db
+    .prepare("SELECT id, path, enabled FROM roots ORDER BY path COLLATE NOCASE")
+    .all() as { id: number; path: string; enabled: number }[];
   const stats = db.prepare(
     `${SUBTREE}
      SELECT COALESCE(SUM(f.image_count > 0), 0) AS chapters, COALESCE(SUM(f.image_count), 0) AS pages
@@ -68,9 +89,22 @@ export async function listRoots(): Promise<RootInfo[]> {
         () => true,
         () => false
       );
-      return { ...r, name: path.basename(r.path) || r.path, online, ...s, lastScanned: last };
+      return {
+        id: r.id,
+        path: r.path,
+        name: path.basename(r.path) || r.path,
+        online,
+        enabled: r.enabled === 1,
+        ...s,
+        lastScanned: last,
+      };
     })
   );
+}
+
+/** Flip a library folder's enabled flag. Nothing on disk or in the cache changes. */
+export function setRootEnabled(id: number, enabled: boolean): void {
+  getDb().prepare("UPDATE roots SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
 }
 
 /**

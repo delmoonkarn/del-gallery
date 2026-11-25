@@ -28,6 +28,7 @@ export type RootInfo = {
   path: string;
   name: string;
   online: boolean;
+  enabled: boolean;
   chapters: number;
   pages: number;
   lastScanned: number | null;
@@ -37,6 +38,8 @@ const api = {
   roots: (): Promise<RootInfo[]> => ipcRenderer.invoke("roots:list"),
   addRoot: (): Promise<{ id: number; path: string; absorbed: number } | null> => ipcRenderer.invoke("roots:add"),
   removeRoot: (id: number): Promise<void> => ipcRenderer.invoke("roots:remove", id),
+  setRootEnabled: (id: number, enabled: boolean): Promise<void> =>
+    ipcRenderer.invoke("roots:set-enabled", { id, enabled }),
   relocateRoot: (id: number): Promise<string | null> => ipcRenderer.invoke("roots:relocate", id),
   /** rootId null = scan every library folder. */
   scan: (rootId: number | null): Promise<{ scanned: number; offline: string[] }> =>
